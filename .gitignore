@@ -1,0 +1,15 @@
+node_modules
+.next
+.test-runtime/
+/.qrpg-*/
+/supabase/.temp/
+*.log
+out
+build
+coverage
+.env
+.env.*
+!.env.example
+.vercel
+.DS_Store
+*.tsbuildinfo

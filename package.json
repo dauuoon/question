@@ -1,0 +1,46 @@
+{
+  "name": "why-box",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test:question-ui": "node --test tests/question-generation-ui.test.mjs",
+    "test:question-server": "node --test tests/question-generation-server.test.mjs",
+    "test:question-db": "node --test tests/question-generation-db.test.mjs",
+    "test:session-completion": "node --test tests/session-completion-db.test.mjs tests/session-briefing-server.test.mjs",
+    "test:diary": "node --test tests/diary.test.mjs",
+    "test:question-concurrency": "PG_TEST_ENABLED=1 node --test tests/question-generation-concurrency.test.mjs",
+    "test:image-delete": "node --experimental-strip-types --test tests/image-deletion.test.mjs tests/image-deletion-db.test.mjs",
+    "dev": "next dev",
+    "dev:test": "node scripts/test-runtime.mjs",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test:storage-slots": "node --experimental-strip-types --test tests/storage-upload-slots.test.mjs tests/storage-upload-api.test.mjs",
+    "test:activity": "node --experimental-strip-types --test tests/participant-activity.test.mjs",
+    "test:context": "node --test tests/session-context.test.mjs",
+    "test:context-draft": "node --test tests/context-draft.test.mjs"
+  },
+  "dependencies": {
+    "@supabase/ssr": "^0.6.1",
+    "@supabase/supabase-js": "^2.57.4",
+    "next": "^16.3.8",
+    "openai": "7.28.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "server-only": "^0.0.1",
+    "sharp": "^0.35.5",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "jsdom": "^27.0.0",
+    "@electric-sql/pglite": "0.5.8",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.18.6",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "eslint": "^10.12.0",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.71.0"
+  }
+}
