@@ -18,7 +18,9 @@ function load(path, mocks = {}) {
   }).outputText;
   const module = { exports: {} };
   runInThisContext(`(function(require,module,exports){${compiled}\n})`)(
-    (name) => Object.hasOwn(mocks, name) ? mocks[name] : require(name), module, module.exports,
+    (name) => Object.hasOwn(mocks, name) ? mocks[name] :
+      name === "@/lib/session-completion/display-state" ?
+        load("../src/lib/session-completion/display-state.ts") : require(name), module, module.exports,
   );
   return module.exports;
 }

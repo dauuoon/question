@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 import { z } from "zod";
 import { requireRole } from "@/lib/auth/role";
 import { diaryExperienceChoices, diaryFeelingChoices } from "@/lib/diaries/contract";
+import { ResearchDownload } from "../../research-download";
+import { accountTypeLabel, accountTypeSchema } from "@/lib/accounts/type";
 
 type AdminSessionPageProps = {
   params: Promise<{ sessionId: string }>;
@@ -21,7 +23,7 @@ export default async function AdminSessionPage({
   if (!session) notFound();
   const [profileResult, contextResult, questionResult, eventResult,
     sourceResult, versionResult, diaryResult, requestResult] = await Promise.all([
-    supabase.from("profiles").select("participant_code,status").eq("id", session.participant_id).maybeSingle(),
+    supabase.from("profiles").select("participant_code,status,role,account_type").eq("id", session.participant_id).maybeSingle(),
     supabase.from("session_contexts").select("context_id").eq("session_id", sessionId).order("context_id"),
     supabase.from("questions")
       .select("id,slot_index,question_text,question_kind,status,is_active_version,root_question_id,parent_question_id,regeneration_index,followup_index,skip_reason,skipped_at,answered_at,model_id,prompt_version,framework_version,generated_at")
@@ -48,9 +50,14 @@ export default async function AdminSessionPage({
     .in("question_id", questionIds) : { data: [], error: null };
   if (answerResult.error) throw new Error("Unable to load read-only session answers.");
   const answerByQuestion = new Map((answerResult.data ?? []).map(answer => [answer.question_id, answer]));
+  const accountType = accountTypeSchema.nullable().parse(profileResult.data?.account_type);
 
   return (
     <section className="content-stack">
+      {profileResult.data?.role === "participant" && accountType === "P" ?
+        <ResearchDownload kind="session" id={sessionId} label="이 세션 연구 기록 Excel 다운로드" /> :
+        <p className="supporting-copy">이 세션은 연구용 Excel에서 제외됩니다. 관리자 상세 조회는 가능합니다.</p>}
+      <p>{accountTypeLabel(accountType)}</p>
       <div>
         <p className="eyebrow">Admin · Session</p>
         <h1 className="page-title">{profileResult.data?.participant_code ?? "참여자"} · 세션 상세</h1>

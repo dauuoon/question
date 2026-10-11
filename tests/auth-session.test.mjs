@@ -47,6 +47,7 @@ function roleSetup({ error = null, user = true, role = "admin", status = "active
   const module = load("../src/lib/auth/role.ts", {
     "next/navigation": { redirect: (location) => { throw new Error(`REDIRECT:${location}`); } },
     "@/lib/auth/session-error": classifier,
+    "@/lib/performance/request": {},
     "@/lib/supabase/server": { createSupabaseServerClient: async () => client },
     "@/lib/errors/report": { reportError: async (...args) => { calls.errors.push(args); } },
   });
@@ -81,6 +82,7 @@ test("proxy permits invalid-session cleanup cookies but never swallows infrastru
   for (const error of [expired, { name: "AuthSessionMissingError" }, transient]) {
     const responses = [];
     const proxy = load("../proxy.ts", {
+      "@/lib/performance/request": {},
       "@/lib/env": { getPublicEnv: () => ({ NEXT_PUBLIC_SUPABASE_URL: "https://test.invalid", NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "TEST" }) },
       "@/lib/auth/session-error": classifier,
       "@supabase/ssr": { createServerClient: (_url, _key, options) => ({

@@ -8,21 +8,36 @@ import { QUESTION_GENERATION_SIGNED_URL_SECONDS } from "../ai/server/question-ge
 import { answerRevisionSchema } from "../answers/revision";
 import { readQuestionActionCapabilities } from "./actions-server";
 
-export async function readGenerationView(caller: SupabaseClient, userId: string, sessionId: string): Promise<GenerationView> {
+const sessionSnapshotSchema = z.object({
+  id: z.uuid(), participant_id: z.uuid(),
+  status: z.enum(["draft", "question_generation", "in_progress", "summary_ready", "completed"]),
+  requested_question_count: z.number().int().min(1).max(5),
+});
+type SessionSnapshot = z.infer<typeof sessionSnapshotSchema>;
+
+export async function readGenerationView(caller: SupabaseClient, userId: string, sessionId: string,
+  savedSession?: SessionSnapshot): Promise<GenerationView> {
   if (!z.uuid().safeParse(sessionId).success) throw new QuestionGenerationError("QGEN-INPUT", 400);
-  const session = await caller.from("sessions").select("status,requested_question_count")
-    .eq("id", sessionId).eq("participant_id", userId).maybeSingle();
+  const snapshot = savedSession === undefined ? null : sessionSnapshotSchema.safeParse(savedSession);
+  if (snapshot && (!snapshot.success || snapshot.data.id !== sessionId || snapshot.data.participant_id !== userId)) {
+    throw new QuestionGenerationError("QGEN-AUTH", 403);
+  }
+  const session = snapshot?.success ? { data: snapshot.data, error: null } :
+    await caller.from("sessions").select("status,requested_question_count")
+      .eq("id", sessionId).eq("participant_id", userId).maybeSingle();
   if (session.error) throw new QuestionGenerationError("QGEN-DB", 503);
   if (!session.data) throw new QuestionGenerationError("QGEN-AUTH", 403);
   const parsedSession = z.object({ status: z.enum(["draft", "question_generation", "in_progress", "summary_ready", "completed"]),
     requested_question_count: z.number().int().min(1).max(5) }).safeParse(session.data);
   if (!parsedSession.success) throw new QuestionGenerationError("QGEN-DB", 503);
-  const attempts = await caller.from("question_generation_attempts")
+  const [attempts, questions] = await Promise.all([
+    caller.from("question_generation_attempts")
     .select("status,generated_at,request_id").eq("session_id", sessionId)
-    .order("started_at", { ascending: false }).limit(1);
-  const questions = await caller.from("questions").select("id,slot_index,question_text,status,regeneration_index")
+    .order("started_at", { ascending: false }).limit(1),
+    caller.from("questions").select("id,slot_index,question_text,status,regeneration_index")
     .eq("session_id", sessionId).in("question_kind",["original","regenerated"])
-    .eq("is_active_version",true).order("slot_index");
+    .eq("is_active_version",true).order("slot_index"),
+  ]);
   if (attempts.error || !attempts.data || questions.error || !questions.data) {
     throw new QuestionGenerationError("QGEN-DB", 503);
   }
@@ -37,11 +52,16 @@ export async function readGenerationView(caller: SupabaseClient, userId: string,
   let savedQuestions: GenerationView["questions"] = [];
   let signedImages: Array<{id:string;sort_order:number;width:number|null;height:number|null;signed_url:string}> = [];
   let answerEditable = false;
+  let capabilities: GenerationView["question_actions"] = {ready:false,reserve_count:0,reserve_count_by_question:{}};
   if (state === "completed") {
-    const imageRows = await caller.from("session_images")
-      .select("id,storage_path,sort_order,width,height").eq("session_id",sessionId).order("sort_order");
-    const targetRows = await caller.from("question_targets")
-      .select("question_id,image_id,x,y,width,height,sort_order").eq("session_id",sessionId).order("sort_order");
+    const [imageRows, targetRows, actions] = await Promise.all([
+      caller.from("session_images")
+        .select("id,storage_path,sort_order,width,height").eq("session_id",sessionId).order("sort_order"),
+      caller.from("question_targets")
+        .select("question_id,image_id,x,y,width,height,sort_order").eq("session_id",sessionId).order("sort_order"),
+      readQuestionActionCapabilities(caller,sessionId),
+    ]);
+    capabilities = actions;
     if (imageRows.error || !imageRows.data || targetRows.error || !targetRows.data) {
       throw new QuestionGenerationError("QGEN-DB",503);
     }
@@ -61,9 +81,17 @@ export async function readGenerationView(caller: SupabaseClient, userId: string,
       images.data.some((image) => !image.storage_path.startsWith(`${userId}/${sessionId}/`))) {
       throw new QuestionGenerationError("QGEN-RECOVERY",503);
     }
-    const answerRows = saved.data.length ? await caller.from("answers")
+    const [answerRows, urls] = await Promise.all([
+      saved.data.length ? caller.from("answers")
       .select("question_id,original_answer,refined_answer,refinement_used,current_answer_version,updated_at")
-      .in("question_id",saved.data.map((question)=>question.id)) : {data:[],error:null};
+      .in("question_id",saved.data.map((question)=>question.id)) : {data:[],error:null},
+      Promise.all(images.data.map(async (image) => {
+        const signed = await caller.storage.from(IMAGE_BUCKET)
+          .createSignedUrl(image.storage_path,QUESTION_GENERATION_SIGNED_URL_SECONDS);
+        if (signed.error || !signed.data?.signedUrl) throw new QuestionGenerationError("QGEN-IMAGE",503);
+        return {id:image.id,sort_order:image.sort_order,width:image.width,height:image.height,signed_url:signed.data.signedUrl};
+      })),
+    ]);
     if(answerRows.error || !answerRows.data) throw new QuestionGenerationError("QGEN-DB",503);
     const answers = z.array(z.object({
       question_id:z.uuid(),original_answer:z.string(),refined_answer:z.string().nullable(),
@@ -95,19 +123,12 @@ export async function readGenerationView(caller: SupabaseClient, userId: string,
       })(),
     }));
     answerEditable=parsedSession.data.status==="in_progress";
-    const urls = await Promise.all(images.data.map(async (image) => {
-      const signed = await caller.storage.from(IMAGE_BUCKET)
-        .createSignedUrl(image.storage_path,QUESTION_GENERATION_SIGNED_URL_SECONDS);
-      if (signed.error || !signed.data?.signedUrl) throw new QuestionGenerationError("QGEN-IMAGE",503);
-      return {id:image.id,sort_order:image.sort_order,width:image.width,height:image.height,signed_url:signed.data.signedUrl};
-    }));
     signedImages = urls.sort((a,b)=>a.sort_order-b.sort_order);
   }
   const parsed = generationViewSchema.safeParse({
     session_id: sessionId, state, requested_question_count: parsedSession.data.requested_question_count,
     answer_editable:state==="completed" && answerEditable,
-    question_actions:state==="completed"?await readQuestionActionCapabilities(caller,sessionId):
-      {ready:false,reserve_count:0,reserve_count_by_question:{}},
+    question_actions:capabilities,
     failed_request_id: attempt?.status === "failed" ? attempt.request_id : null,
     questions: state === "completed" ? savedQuestions : [],
     images: state === "completed" ? signedImages : [],

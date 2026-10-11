@@ -12,6 +12,7 @@ import { saveQuestionCount } from "./context-actions";
 import { GenerationController, recoveryMessage, type GenerationUI } from "@/lib/question-generation/controller";
 import { questionCountSchema, type GenerationView } from "@/lib/question-generation/view-contract";
 import { QuestionResult } from "./question-result";
+import { questionSessionStatus } from "@/lib/session-completion/display-state";
 import { QuestionGenerationLoading } from "./question-generation-loading";
 import { sessionContextSchema } from "@/lib/session-context/input";
 
@@ -110,7 +111,7 @@ export function SessionWizard({ sessionId, initial, initialSavedAt, initialGener
   }
 
   if (generation.view.state === "completed") {
-    return <QuestionResult result={generation.view} sessionStatus={sessionStatus} />;
+    return <QuestionResult result={generation.view} sessionStatus={questionSessionStatus(sessionStatus)} />;
   }
   if (!stepReady) return <p role="status">마지막 작업 단계를 불러오고 있어요.</p>;
 

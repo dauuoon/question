@@ -49,6 +49,15 @@
   align-items: start;
   gap: var(--space-6);
 }
+.admin-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:var(--space-4); }
+.admin-downloads,.admin-pagination { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-4); }
+.service-usage { font-size:var(--font-size-caption); margin-top:var(--space-6); }
+.service-usage h3 { font-size:var(--font-size-caption); margin:0; }
+.research-progress { width:100%; height:1rem; accent-color:var(--color-primary); }
+.account-type-confirm { display:flex; align-items:flex-start; gap:var(--space-2); }
+.account-type-confirm input { width:auto; flex:none; margin-top:.25rem; }
+.admin-downloads button { padding-inline:var(--space-4); }
+@media (max-width:640px) { .admin-metrics { grid-template-columns:1fr; } }
 
 .notice-card.account-create {
   display: block;
@@ -359,7 +368,7 @@ body:has(.wizard-footer) .toast-stack { bottom: calc(4.75rem + env(safe-area-ins
   background: var(--toast-background);
   color: var(--toast-text);
   border: 0;
-  border-radius: var(--radius-card);
+  border-radius: 9999px;
   box-shadow: none;
   padding: var(--space-4) var(--space-5);
   font-weight: var(--font-weight-semibold);
@@ -541,7 +550,8 @@ body:has(.participant-shell[data-theme="dark"]) .toast-stack {
 }
 
 .button-link:hover {
-  background: var(--color-primary-hover);
+  background: var(--color-primary);
+  opacity: .8;
 }
 
 .button-secondary {

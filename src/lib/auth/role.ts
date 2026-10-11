@@ -2,10 +2,11 @@ import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { reportError } from "@/lib/errors/report";
 import { isInvalidAuthSession } from "@/lib/auth/session-error";
+import { cache } from "react";
 
 export type UserRole = "participant" | "admin";
 
-export async function requireRole(expectedRole: UserRole) {
+const verifiedAccount = cache(async () => {
   const supabase = await createSupabaseServerClient();
   const {
     data: { user },
@@ -42,6 +43,11 @@ export async function requireRole(expectedRole: UserRole) {
     redirect("/login?error=AUTH-002");
   }
 
+  return { supabase, user, profile };
+});
+
+export async function requireRole(expectedRole: UserRole) {
+  const { supabase, user, profile } = await verifiedAccount();
   if (profile.role !== expectedRole) {
     redirect(profile.role === "admin" ? "/admin" : "/");
   }

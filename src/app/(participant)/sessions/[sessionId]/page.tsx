@@ -22,11 +22,11 @@ export default async function ParticipantSessionPage({
   if (!z.uuid().safeParse(sessionId).success) notFound();
   const { supabase, user } = await requireRole("participant");
   const { data: session, error } = await supabase.from("sessions")
-    .select("status, updated_at, summary_text, primary_category_id, subcategory_id, other_category_text, stage_id, additional_context")
+    .select("id, participant_id, requested_question_count, status, updated_at, summary_text, primary_category_id, subcategory_id, other_category_text, stage_id, additional_context")
     .eq("id", sessionId).eq("participant_id", user.id).maybeSingle();
   if (error) throw new Error("Unable to load this reflection session.");
   if (!session) notFound();
-  const generation = await readGenerationView(supabase, user.id, sessionId);
+  const generation = await readGenerationView(supabase, user.id, sessionId, session);
   if (generation.state === "completed") return <section className="content-stack">
     <ActivityMarker path={`/sessions/${sessionId}`} participantId={user.id} />
     <QuestionResult result={generation} sessionStatus={session.status} />

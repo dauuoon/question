@@ -211,7 +211,7 @@ test("read-only catalog path returns ordered public questions, failed unlock and
 });
 
 async function mount(t, {initial=view(),input=valid,imageCount=1,available=true,saveResult,
-  readResult,postResult,countSaveResult,draftResult,strict=true}={}) {
+  readResult,postResult,countSaveResult,draftResult,strict=true,sessionStatus="draft"}={}) {
   const dom=new JSDOM("<!doctype html><div id='root'></div>",{url:"http://localhost/sessions/"+sessionId});
   const originals={};
   for(const [name,value] of Object.entries({window:dom.window,document:dom.window.document,Element:dom.window.Element,
@@ -259,8 +259,8 @@ async function mount(t, {initial=view(),input=valid,imageCount=1,available=true,
   const {SessionWizard}=components("src/app/(participant)/sessions/[sessionId]/session-wizard.tsx");
   const host=dom.window.document.getElementById("root");const root=createRoot(host);
   const render=()=>root.render(strict?React.createElement(React.StrictMode,null,
-    React.createElement(SessionWizard,{sessionId,initial:input,initialGeneration:initial})):
-    React.createElement(SessionWizard,{sessionId,initial:input,initialGeneration:initial}));
+    React.createElement(SessionWizard,{sessionId,initial:input,initialGeneration:initial,sessionStatus})):
+    React.createElement(SessionWizard,{sessionId,initial:input,initialGeneration:initial,sessionStatus}));
   await act(async()=>{render();await settle();});
   t.after(async()=>{
     await act(async()=>{root.unmount();await settle();});dom.window.close();
@@ -275,9 +275,14 @@ async function mount(t, {initial=view(),input=valid,imageCount=1,available=true,
 
 async function mountResult(t,result=view("completed"),fetchHandler,sessionStatus="in_progress") {
   const dom=new JSDOM("<!doctype html><div id='root'></div>",{url:"http://localhost/history"});
+  const observers=[];
   const originals={};
   for(const [name,value] of Object.entries({window:dom.window,document:dom.window.document,Element:dom.window.Element,
-    HTMLElement:dom.window.HTMLElement,HTMLAnchorElement:dom.window.HTMLAnchorElement,IS_REACT_ACT_ENVIRONMENT:true})) {
+    HTMLElement:dom.window.HTMLElement,HTMLAnchorElement:dom.window.HTMLAnchorElement,
+    ResizeObserver:class {
+      constructor(callback) { this.callback=callback;this.active=true;observers.push(this); }
+      observe() {} disconnect() { this.active=false; }
+    },IS_REACT_ACT_ENVIRONMENT:true})) {
     originals[name]=Object.getOwnPropertyDescriptor(globalThis,name);
     Object.defineProperty(globalThis,name,{value,writable:true,configurable:true});
   }
@@ -303,7 +308,7 @@ async function mountResult(t,result=view("completed"),fetchHandler,sessionStatus
     }
   };
   t.after(close);
-  return {dom,host,close,router};
+  return {dom,host,close,router,observers};
 }
 
 for(const [name,opts] of [
@@ -1373,7 +1378,8 @@ test("server page renders the saved result in completed and in-progress sessions
     assert.doesNotMatch(html,/질문 생성하기/);
     if(status==="completed") {
       assert.match(html,/디자인 브리핑/);
-      assert.match(html,/디자인 브리핑 요약 보기/);
+      assert.doesNotMatch(html,/디자인 브리핑 요약 보기/);
+      assert.match(html,/저장된 디자인 브리핑을 불러오고 있어요/);
       assert.doesNotMatch(html,/TEST final summary/);
     }
     else {
@@ -1499,17 +1505,17 @@ test("ambiguous session completion hides recovery notice and retries only the sa
   assert.equal(stored.state,"unknown");
 });
 
-test("summary-ready sessions remain read-only and provide briefing recovery without offering a second completion",async(t)=>{
+test("summary-ready sessions remain read-only without prematurely reading or exposing a briefing",async(t)=>{
   let reads=0;
   const ui=await mountResult(t,view("completed"),async(url)=>{
     assert.match(url,/\/api\/sessions\/.*\/briefing$/);
     reads++;
     return json(briefingBody("Saved synthetic briefing"));
   },"summary_ready");
-  assert.ok(reads>=1);
-  assert.equal(ui.host.querySelector(".briefing-text").textContent,"Saved synthetic briefing");
+  assert.equal(reads,0);
+  assert.equal(ui.host.querySelector(".briefing-text"),null);
   assert.equal(ui.host.querySelector(".question-result-footer .wizard-actions > button"),null);
-  assert.ok(ui.host.querySelector('[aria-label="디자인 브리핑 요약 보기"]'));
+  assert.equal(ui.host.querySelector('[aria-label="디자인 브리핑 요약 보기"]'),null);
   await act(async()=>{
     ui.host.querySelector('[aria-label="질문 1 선택"]').click();
     await settle();
@@ -1517,6 +1523,55 @@ test("summary-ready sessions remain read-only and provide briefing recovery with
   assert.equal(ui.host.querySelector("textarea").disabled,true);
 });
 
+  test("question generation transitions from stale server status into editable questions without refresh or briefing GET",async(t)=>{
+    const ui=await mount(t,{sessionStatus:"question_generation"});
+    await ui.click(ui.button("질문 생성하기"));
+    assert.equal(ui.host.querySelector('[aria-label="디자인 브리핑 요약 보기"]'),null);
+    assert.equal(ui.host.querySelector('[aria-label="나의 생각"]').disabled,false);
+    await ui.click(ui.host.querySelector('[aria-label="질문 2 선택"]'));
+    assert.match(ui.host.querySelector(".question-panel-text").textContent,/TEST question 2/);
+    assert.equal(ui.host.querySelector('[aria-label="나의 생각"]').disabled,false);
+    assert.equal(ui.calls.some(c=>String(c.url).endsWith("/briefing")),false);
+    assert.equal(ui.calls.filter(c=>c.url==="/api/question-generation"&&c.opts.method==="POST").length,1);
+  });
+
+  test("pin bubble closes without deselecting, reopens on same pin, and switches exact question",async(t)=>{
+    const ui=await mountResult(t);
+    const pin=n=>ui.host.querySelector(`[aria-label="질문 ${n} 위치 보기"]`);
+    await act(async()=>{pin(1).click();await settle();});
+    assert.equal(ui.host.querySelector(".question-bubble p").textContent,"TEST question 1");
+    assert.equal(pin(1).getAttribute("aria-expanded"),"true");
+    await act(async()=>{ui.host.querySelector(".question-bubble-close").click();await settle();});
+    assert.equal(ui.host.querySelector(".question-bubble"),null);
+    assert.equal(pin(1).getAttribute("aria-current"),"true");
+    await act(async()=>{pin(1).click();await settle();});
+    assert.equal(ui.host.querySelector(".question-bubble p").textContent,"TEST question 1");
+    await act(async()=>{pin(2).click();await settle();});
+    assert.equal(ui.host.querySelector(".question-bubble p").textContent,"TEST question 2");
+    assert.equal(ui.host.querySelector(".question-panel-text").textContent,"TEST question 2");
+    await act(async()=>{ui.host.querySelector('[aria-label="질문 3 선택"]').click();await settle();});
+    assert.equal(ui.host.querySelector(".question-bubble"),null);
+  });
+
+  test("failed completion retains question selection and answers without exposing or fetching briefing",async(t)=>{
+    const input=view("completed");
+    input.questions=input.questions.map((q,index)=>({...q,status:index===0?"answered":"skipped",
+      answer:{...q.answer,original_answer:index===0?"Saved synthetic answer":""}}));
+    let briefingReads=0;
+    const ui=await mountResult(t,input,async(url,options={})=>{
+      if(url.endsWith("/briefing")){briefingReads++;return json({errorCode:"BRIEFING-NOT-FOUND"},404);}
+      if(url.endsWith("/complete"))return json({request_id:JSON.parse(options.body).request_id,state:"failed",
+        attempt_number:1,retry_of_request_id:null,missing_question_ids:[],has_answer:true,replayed:false,provider_mode:"openai"},502);
+      throw new Error("Unexpected request");
+    });
+    await act(async()=>{ui.host.querySelector(".question-result-footer .wizard-actions button").click();await settle();});
+    await act(async()=>{[...ui.host.querySelectorAll(".session-finish-dialog button")].find(b=>b.textContent==="세션 종료").click();await settle();});
+    assert.equal(briefingReads,0);
+    assert.equal(ui.host.querySelector('[aria-label="디자인 브리핑 요약 보기"]'),null);
+    assert.equal(ui.host.querySelector('[aria-label="나의 생각"]').value,"Saved synthetic answer");
+    assert.equal(ui.host.querySelector('[aria-label="나의 생각"]').disabled,true);
+    assert.match(ui.host.querySelector(".completion-status").textContent,/브리핑 생성을 완료하지 못했습니다/);
+  });
 test("briefing CAS conflicts preserve the participant draft instead of replacing it",async(t)=>{
   const ui=await mountResult(t,view("completed"),async(url,options={})=>{
     if(options.method==="PATCH")return json({errorCode:"BRIEFING-REVISION-CONFLICT",current_revision:2},409);
@@ -1526,6 +1581,7 @@ test("briefing CAS conflicts preserve the participant draft instead of replacing
     ui.host.querySelector(".briefing-edit-button").click();
     await settle();
   });
+
   const editor=ui.host.querySelector("#design-briefing-editor");
   Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype,"value")
     .set.call(editor,"Participant's unsaved synthetic draft");
@@ -1540,6 +1596,30 @@ test("briefing CAS conflicts preserve the participant draft instead of replacing
   assert.equal(ui.host.querySelector("#design-briefing-editor").value,"Participant's unsaved synthetic draft");
   assert.match(ui.host.querySelector(".briefing-notice").textContent,/최신 revision 2/);
   assert.ok([...ui.host.querySelectorAll("button")].some(button=>button.textContent.includes("최신 버전 불러오기")));
+});
+
+test("pin bubble recalculates bounded coordinates after image resize and ancestor zoom",async(t)=>{
+  const ui=await mountResult(t);
+  const frame=ui.host.querySelector(".question-image-frame");
+  const pin=ui.host.querySelector('[aria-label="질문 1 위치 보기"]');
+  let width=400,height=300,scale=1;
+  Object.defineProperties(frame,{clientWidth:{get:()=>width},clientHeight:{get:()=>height}});
+  frame.getBoundingClientRect=()=>({left:100,top:100,width:width*scale,height:height*scale});
+  pin.getBoundingClientRect=()=>({left:100+(width*.175-19)*scale,right:100+(width*.175+19)*scale,
+    top:100+(height*.26-19)*scale,bottom:100+(height*.26+19)*scale});
+  await act(async()=>{pin.click();await settle();});
+  const bubble=()=>ui.host.querySelector(".question-bubble");
+  const initialLeft=bubble().style.left,initialTop=bubble().style.top;
+  scale=2;
+  await act(async()=>{for(const o of ui.observers)if(o.active)o.callback();await settle();});
+  assert.equal(bubble().style.left,initialLeft);
+  assert.equal(bubble().style.top,initialTop);
+  width=200;height=150;
+  await act(async()=>{for(const o of ui.observers)if(o.active)o.callback();await settle();});
+  assert.ok(parseFloat(bubble().style.left)+parseFloat(bubble().style.width)<=width);
+  assert.ok(parseFloat(bubble().style.top)+parseFloat(bubble().style.maxHeight)<=height);
+  await ui.close();
+  assert.ok(ui.observers.every(o=>!o.active));
 });
 
 test("internal navigation offers continue or save-and-leave without completing the session",async(t)=>{

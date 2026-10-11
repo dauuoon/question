@@ -8,20 +8,18 @@ import { typescriptLoader } from "./helpers/typescript-loader.mjs";
 test("Admin meets the minimum exactly at five completed sessions and still shows all additional uses", async () => {
   for (const count of [4, 5, 6, 10]) {
     const profile = { id: "10000000-0000-4000-8000-000000000001",
-      participant_code: "P99001", status: "active", created_at: null, last_activity_at: null };
-    const client = { from(table) {
-      const q = {
-        select() { return q; }, eq() { return q; }, order() { return q; },
-        then(resolve, reject) {
-          return Promise.resolve(table === "profiles" ? { data: [profile], error: null } :
-            { count: table === "sessions" ? count : count - 1, error: null }).then(resolve, reject);
-        },
-      };
-      return q;
+      participant_code: "P99001", account_type: "P", status: "active",
+      created_at: "2026-10-11T10:00:00Z", last_activity_at: null, completed: count, diaries: count - 1 };
+    let calls = 0;
+    const client = { async rpc(name, args) {
+      calls++;
+      assert.equal(name, "admin_participants_read");
+      assert.deepEqual(args, { p_page: 1, p_filter: "all" });
+      return { data: { rows: [profile], page: 1, pages: 1, filter: "all" }, error: null };
     } };
     const load = typescriptLoader({
       "@/lib/auth/role": { requireRole: async () => ({ supabase: client }) },
-      "./account-forms": { CreateParticipantForm: () => null, ManageParticipantForm: () => null },
+      "./account-forms": { CreateParticipantForm: () => null, ManageParticipantForm: () => null, ChangeAccountTypeForm: () => null },
       "next/link": { default: ({ children }) => children },
       "@/lib/activity/screen": { formatResearchDate: () => "-" },
     });
@@ -29,6 +27,8 @@ test("Admin meets the minimum exactly at five completed sessions and still shows
     const html = renderToStaticMarkup(await page.default());
     assert.match(html, new RegExp(`최소 5회 사용 ${count < 5 ? "미충족" : "충족"}`));
     assert.match(html, new RegExp(`도구 사용 ${count}회`));
+    assert.match(html, new RegExp(`다이어리 작성 ${count - 1}회`));
+    assert.equal(calls, 1);
   }
 });
 

@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import type { CookieOptions } from "@supabase/ssr";
 import { getPublicEnv } from "@/lib/env";
 import { isInvalidAuthSession } from "@/lib/auth/session-error";
+import { createRequestMetrics, instrumentSupabaseFetch } from "@/lib/performance/request";
 
 export async function proxy(request: NextRequest) {
   const env = getPublicEnv();
@@ -11,6 +12,9 @@ export async function proxy(request: NextRequest) {
     env.NEXT_PUBLIC_SUPABASE_URL,
     env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
     {
+      ...(process.env.WHY_BOX_PERFORMANCE_LOG_ENABLED === "true" ? {
+        global: { fetch: instrumentSupabaseFetch(createRequestMetrics("proxy")) },
+      } : {}),
       cookies: {
         getAll() {
           return request.cookies.getAll();

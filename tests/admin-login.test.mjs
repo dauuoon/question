@@ -109,6 +109,7 @@ test("email and P01 logins remain available with no alias configuration", async 
     for (const [identifier, email, role] of [
       [fixtureEmail, fixtureEmail, "admin"],
       [" p01 ", "p01@participants.whybox.invalid", "participant"],
+      [" t01 ", "t01@participants.whybox.invalid", "participant"],
     ]) {
       const s = setup({ role });
       await assert.rejects(s.signIn(form(identifier)),
@@ -125,6 +126,19 @@ test("invalid identifiers and empty passwords never attempt authentication", asy
       await assert.rejects(s.signIn(data), /^Error: REDIRECT:\/login\?error=AUTH-001$/);
       assert.deepEqual(s.calls.credentials, []);
     }
+  });
+
+  test("renamed T01 login authorizes the same UUID; old P01 mapping has no automatic alias", async () => {
+    await withAlias(undefined, async () => {
+      const renamed = setup({ role: "participant" });
+      await assert.rejects(renamed.signIn(form("T01")), /^Error: REDIRECT:\/$/);
+      assert.equal(renamed.calls.credentials[0].email, "t01@participants.whybox.invalid");
+      assert.deepEqual(renamed.calls.filters, [["id", fixtureId]]);
+      const old = setup({ role: "participant", signInError: { code: "invalid_credentials" } });
+      await assert.rejects(old.signIn(form("P01")), /^Error: REDIRECT:\/login\?error=AUTH-001$/);
+      assert.equal(old.calls.credentials[0].email, "p01@participants.whybox.invalid");
+      assert.deepEqual(old.calls.filters, []);
+    });
   });
 });
 

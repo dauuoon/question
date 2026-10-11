@@ -4,6 +4,253 @@ WHY BOX is a research tool for supporting designers' reflective thinking. The au
 
 ## Production release preflight (2026-10-10)
 
+### Local UI and research export update (2026-10-11)
+
+The UI/export update and its P/T extension are local-only pending review.
+Question prompts, AI schemas, existing credentials and research records are
+unchanged. The P/T extension requires the draft migration described below;
+it has not been executed.
+
+- Successful question generation normalizes the stale wizard status to
+  `in_progress`. Answers are immediately editable without refresh. Briefing
+  tabs require a completed session **and a successfully loaded saved source**;
+  `summary_ready` remains frozen/read-only while completion can be recovered.
+  Completion failure preserves the question display and saved/unsaved text.
+- Toasts use pill corners. Footer and briefing cancel/save groups use equal,
+  intrinsic content-sized columns, with wrapping on narrow screens. Orange
+  buttons retain their background on hover and change opacity instead.
+- Clicking an image pin opens its question in an orange 90% bubble. Closing
+  the bubble retains selection; repeat clicks reopen it. Placement is bounded
+  to the image and recalculated for resizing/zoom; long text scrolls inside it.
+- The administrator dashboard uses authenticated, paginated DB reads and
+  aggregates actual records (no hardcoded research counts).
+  Recent activity is the latest stored session/question/answer/diary/image/
+  briefing-revision timestamp, not a fabricated session activity field.
+  Sorting is activity-descending with stable ID ties, 20 sessions per page.
+- Administrator-only XLSX downloads are available on the dashboard (all **P**
+  sessions/all **P** diary records including drafts), session details, and participant details.
+  The API independently checks the active administrator role and uses the
+  authenticated Supabase client and existing RLS, never a service-role key.
+  Session workbooks contain Sessions, Questions, Answers, Briefings, Diaries,
+  and QuestionEvents sheets. Questions retain all predecessor versions and
+  root/parent IDs; briefings retain the AI source and every user revision.
+  Diary choices are JSON arrays. Dates are ISO text in Asia/Seoul (`+09:00`).
+  Only actual schema fields are exported: `question_kind`, `content_principle`,
+  and `detail_type`; no invented question-type field.
+- Emails, passwords, auth tokens, API keys, and storage paths are not selected.
+  Formula-looking user text is written as an XLSX **string cell**, preserving
+  the original content without executing a formula.
+- Exports are read-only, not a transactional DB snapshot. Avoid concurrent
+  research edits when taking an analysis extract. Streaming XLSX generation
+  uses private temporary files, cleaned after completion/cancellation/error.
+  Limits: 2,000 selected sessions; 20,000 total data rows; 16 MiB cell text;
+  32,767 characters per cell; 4 MiB final file (below Vercel's response limit).
+  Limits fail explicitly without truncation: split by participant/session.
+  DB reads use 500-row pages, bounded to 50,000 rows/16 MiB per query.
+  Dashboard activity aggregation is bounded but server-side in memory because
+  the existing schema has no reliable session-level last-activity column.
+
+Offline regressions: `node --test tests/admin-research.test.mjs
+tests/question-generation-ui.test.mjs tests/ui-shell.test.mjs`.
+Verify full offline tests, lint, typecheck, and build before any approved
+deployment; real mobile layout and hosted permissions remain deployment checks.
+
+### Explicit P/T account classification and research policy
+
+- `role` still controls authorization (`admin` / `participant`).
+  `profiles.account_type` independently classifies ordinary accounts as `P`
+  (research participant), `T` (review/test), or `NULL` (not reviewed).
+  Existing rows stay NULL; there is **no backfill to P**, including P01.
+  Both P and T use the same participant features. Account codes accept P/T
+  prefixes for login convenience, but prefixes never determine classification.
+  Changing type does not rename an account or change its Auth identity.
+- Creation requires an explicit type selection. Type changes require a
+  confirmation checkbox and reason; the checked administrator RPC locks the
+  target, compares its expected old type, and records an append-only event.
+  It cannot change an administrator, role, password, or session record.
+  Ordinary clients retain read-only profile permissions; existing RLS is not
+  weakened. A new admin-only RLS policy exposes classification history.
+- The main dashboard reports P participants, P created/completed sessions,
+  and P submitted diaries. The five-use achievement numerator counts P users
+  with at least five **completed** sessions; the denominator is all P users,
+  including inactive ones and users with zero sessions. An empty denominator
+  is displayed as 0%. The smaller service area reports P+T created sessions,
+  separate P/T totals, and unclassified sessions separately. These counts are
+  **not API calls or costs**. Recent sessions default to P; filters preserve
+  pagination and T/unclassified records remain accessible to administrators.
+- All four research XLSX modes require `role=participant AND account_type=P`.
+  Direct T/unclassified/admin session or account IDs are rejected with 403,
+  not returned as a research file. Empty P scope produces header-only files,
+  never test substitutes. Classification is rechecked before finalizing a
+  workbook; changes detected during generation fail closed. Extracts are not
+  a transaction snapshot: do not reclassify accounts during an analysis export.
+  Reclassification applies to **all prior and future records** of the account;
+  the audit trail records why the cohort changed, not a per-session type snapshot.
+- Draft only:
+  [20261011193000_account_type_research_policy.sql](./supabase/migrations/20261011193000_account_type_research_policy.sql)
+  adds a nullable classification, code constraint support for T IDs, audit
+  events/guards, and the administrator-only change RPC. It must be approved,
+  catalog/ACL checked, and applied once **before** deploying this code.
+  Missing classification objects produce errors; there is no fallback to
+  infer P from old account IDs. No environment flag enables this migration.
+- P01 (`ec0bba1e-3720-4200-a5e1-aed0673d2c32`) is the retained E2E account.
+  After separate Production approval, confirm project
+  `jaqyzbrvufknpsbcuqzw`, protect administrator
+  `89507e34-b4fa-464a-b359-316be9a6bdcb`, apply the draft migration once,
+  then separately approve renaming this verified NULL/P01/participant row to
+  T01 with type T, retaining its UUID and all historical records.
+  [classify-e2e-p01.sql](./supabase/operations/classify-e2e-p01.sql) is **not a
+  migration**: it requires an explicit project/approval setting, verifies both
+  the unchanged Auth rows, administrator and other profiles without printing
+  them, checks one new audit event, and defaults to ROLLBACK. The Auth email
+  must first be changed by the official Auth Admin API as described below.
+  Review and separate COMMIT approval are required. Do not replay it on an
+  already classified or renamed row.
+  Neither file has been executed against Production/TEST. Isolated execution
+  uses only synthetic UUIDs and records as described below.
+
+Offline P/T checks: `node --test tests/account-type.test.mjs
+tests/admin-research.test.mjs tests/admin-login.test.mjs
+tests/research-minimum.test.mjs`. Hosted Auth/API behavior and current Production
+catalog comparison remain pre-deployment gates.
+
+Native isolated validation: `node --test tests/account-type-native.test.mjs`.
+Requires `/opt/homebrew/opt/postgresql@17/bin` (fails, never falls back to a remote
+database, when missing). It creates a private temporary PostgreSQL cluster with
+TCP disabled and a private Unix socket, ignores ambient PG connection settings,
+and shuts down/removes only its own temporary cluster. No `.env` file is loaded.
+All existing application migrations are reproduced with synthetic Auth/Storage
+schemas and accounts. The four account-type SQL files run on that local cluster;
+only the operation/preflight/postflight target UUID constants are substituted
+with synthetic test IDs. The operation is exercised with its default ROLLBACK
+and an isolated COMMIT copy; late migration and profile failures are injected.
+Auth email changes/compensation use a local Mock, not an HTTP Auth API.
+
+The native tests verify data/policy preservation, NULL/P/T creation, service-role
+profile inserts and audit events, administrator-only RPC, participant/anon
+denial, immutable history, row-lock CAS races with two connections, and T01
+profile/email/identity collision guards. Completed 4/5-session cohorts are
+created through real lifecycle RPCs (not disabled triggers). Actual dashboard
+and XLSX code reads the native SQL data through a read-only query adapter;
+additional offline export tests cover all four modes, empty P scope and
+4/5/6-completion boundaries. Original/regenerated questions, original/refined
+answers, briefing source/edit, diary and Storage metadata fingerprints are
+compared across conversion. This is PostgreSQL behavior validation, **not**
+proof of hosted GoTrue email updates, PostgREST role behavior or image bytes.
+
+Validated locally on PostgreSQL 17.5: 14 native test results (one enclosing test
+and 13 scenarios), 55 focused P/T tests, and 347 tests across the 29-file
+offline/native regression selection passed with zero failures/skips.
+Lint, TypeScript and an offline-credential Production build passed.
+The three other native concurrency suites were not part of this selection.
+The four reviewed SQL files required no changes after native validation.
+
+### Approval-gated migration and E2E P01 -> T01 runbook
+
+Prepared SQL (not executed):
+
+- [account-type-preflight.sql](./supabase/operations/account-type-preflight.sql):
+  read-only identity/collision checks, constraints, indexes, profile ACLs/RLS,
+  helper functions, triggers, migration-history availability and data counts.
+- [account-type-postflight.sql](./supabase/operations/account-type-postflight.sql):
+  read-only column, constraints, audit RLS/ACLs, RPC permissions, triggers,
+  protected admin and renamed account checks.
+
+**Backup and stop conditions.** Confirm the actual dashboard/connection project
+is `jaqyzbrvufknpsbcuqzw`; a SQL approval setting is not project identity proof.
+Keep All Deployments protection and stop participant/account writes, uploads,
+automatic retry scripts and type changes. Have the operator verify a usable
+Supabase backup/PITR restore point and its timestamp before approval. Keep a
+private baseline of schema/RLS/ACLs, all account and app records, Auth identity
+and password-hash comparisons, and Storage paths/counts. Never print credentials
+or commit the backup. Database backups do not contain Storage object bytes:
+verify an independent image backup if byte-level recovery is required.
+Record migration SHA-256, row counts and the retained E2E session/image IDs.
+Do not treat the old empty-database reset snapshot as the current recovery point.
+
+Stop if T01 exists as a profile code, Auth email or email-provider identity;
+if P01 UUID, code, role, status or Auth email differs; if the admin differs;
+if the new migration is already/partially present; or if there are unexpected
+schema/policy changes. Inspect migration history separately when its table
+exists. Do not use an unreviewed bulk `db push` to replay earlier applied SQL.
+Before applying this migration, `authenticated` must retain SELECT-only
+profiles access, `anon` no profile writes and `service_role` its existing
+administrative privileges. A column-level REVOKE does not cancel unexpected
+table-level/inherited UPDATE grants: stop and resolve such drift separately.
+
+**Migration checks.** Apply the one approved file in its transaction, with
+5-second lock / 60-second statement timeouts; a timeout/error rolls it back.
+Immediately after COMMIT, existing accounts must still have NULL account_type,
+new audit history must be empty, and preexisting data/counts/admin/Auth unchanged.
+The nullable text column has no default. The only replaced constraint is the
+P/T code-format check; role/code constraint, case-insensitive unique index and
+UUID foreign keys remain. The new audit table has RLS enabled, admin-only SELECT
+for authenticated clients and no client DML/TRUNCATE privileges. Only
+authenticated clients can execute the change RPC; its active-admin check denies
+participants (an EXECUTE grant is not admin authorization). Internal trigger
+functions have no client EXECUTE grants. Type changes are row-locked, CAS checked
+and atomic with their audit insert. An unchanged type returns false without an
+event; clearing a classified type is rejected. SQL-operator changes have a NULL
+actor, whereas authenticated-admin RPC changes record the admin UUID.
+Audit FK RESTRICT/immutability intentionally prevents later deletion of classified
+accounts or audit actors; any future deletion policy needs a separate design.
+
+**Renaming is a two-system operation, not one atomic SQL transaction.**
+The login action maps P01 to `p01@participants.whybox.invalid` and T01 to
+`t01@participants.whybox.invalid`; it does not look up profiles by code.
+The application owns `profiles.participant_code`; Auth owns the login email.
+UUID-based authorization, sessions/FKs, image paths and ownership remain unchanged.
+
+1. Apply/verify the migration, then deploy the separately approved P/T-capable
+   code while access protection remains enabled. The old deployed build may
+   reject T01: do not switch the account before a verified compatible release.
+2. Repeat preflight/collision checks immediately before the operation; capture
+   a private baseline for Auth password/role, profile fields and app records.
+3. With separate account-change approval, call the server-only official API
+   `auth.admin.updateUserById('ec0bba1e-3720-4200-a5e1-aed0673d2c32',
+   { email: 't01@participants.whybox.invalid', email_confirm: true })`.
+   Omit password, role, metadata and other attributes. Do not update auth.users
+   or auth.identities with SQL. Check error, returned UUID and verified email;
+   compare password hash/authorization to the private pre-API baseline.
+   Provider-maintained email/identity fields and updated_at may change.
+4. The profile SQL requires this confirmed new Auth email, locks profiles,
+   rechecks collisions and changes exactly that old P01/NULL/active participant
+   to T01/T. It verifies other profiles and Auth rows unchanged within this
+   SQL stage and allows only code/type/profile updated_at to change.
+   Choose COMMIT only in a separately approved copy of the default-ROLLBACK
+   script. A rehearsal ROLLBACK does **not** revert an already changed Auth email.
+5. Compare all original app rows, FKs and Storage paths/bytes with the baseline;
+   run postflight. Authenticate as T01 with the unchanged password and confirm
+   the same UUID; old P01 must fail on a fresh login (no old-code alias is added).
+   Verify admin login, participant history, image, session detail, admin detail,
+   T recent-session filter, research counts and all four research exports.
+   The former E2E account must be excluded from P statistics/exports, included
+   in T service counts and remain viewable by admins. Do not generate AI calls
+   or new sessions for this verification. Existing tokens may keep their UUID
+   authorization until logout/refresh; close the P01 test tabs beforehand.
+
+**Failure recovery.** A migration error before COMMIT requires no inverse SQL:
+stop, verify rollback and diagnose. If COMMIT status is uncertain, query objects
+and history, not blind replay. After successful COMMIT, prefer fixing forward
+under separate approval; do not drop classification/audit data or disable
+history triggers. A provider restore affects the entire project and requires
+a separate outage/restore approval, not an automatic response to this migration.
+
+If the Auth API result is uncertain, read back the exact UUID before retrying.
+If it fails, do not run profile SQL. If Auth succeeded but profile SQL failed or
+rolled back, keep the maintenance window, verify the unchanged P01 profile, and
+compensate the email to `p01@participants.whybox.invalid` through the same Admin
+API after reviewing collisions; preserve password/UUID. Verify both systems,
+then retry only after diagnosing the error. If the profile COMMIT succeeded,
+do not pretend a type-clear rollback is possible: the immutable history and
+NULL-clear guard require a separately approved repair plan. A code-only rename
+back to P01 with type T and Auth email compensation is possible after review;
+reverting classification to NULL would violate the audit policy.
+
+Reference: [Supabase Auth Admin updateUserById](https://supabase.com/docs/reference/javascript/auth-admin-updateuserbyid).
+All runtime RPC/trigger tests, account updates, deployment, history registration
+and recovery operations remain separately approval-gated.
+
 ### Administrator login alias
 
 Set server-only `WHY_BOX_ADMIN_AUTH_EMAIL` to the existing administrator's Auth
@@ -209,6 +456,61 @@ paths out of Vercel Production. `NODE_ENV` is managed by Next.js/Vercel.
    any actual AI requests need their own explicit authorization and call budget.
 4. Keep both the old Vercel project and all TEST projects/data until the new
    release succeeds and retention/cleanup is separately approved.
+
+## Local first-pass performance optimization
+
+- Role verification uses React `cache` for the current server render only.
+  Layout and page reuse one verified Auth user and active profile; expected-role
+  checks still run at every call. No shared user cache or proxy-trusted headers
+  are used. Proxy cookie refresh and its Auth check remain independent because
+  proxy and server rendering do not share a React request cache.
+- Session entry passes its already ownership-filtered session snapshot to the
+  generation reader. Snapshot UUID/owner/status/count validation remains
+  fail-closed. Independent attempt/question queries, image/target/capability
+  queries, and answer/signed-URL work run in parallel. Active-version, answer,
+  pin, recovery and completed-only briefing checks remain unchanged.
+- Admin reads use `public.admin_dashboard_read(integer,text)` and
+  `public.admin_participants_read(integer,text)`, with `p_page` and `p_filter`
+  arguments and 20 rows per page. The dashboard returns P-only research counts,
+  five-completion achievement, separate P/T/unclassified usage, and recent
+  activity/progression in one consistent SQL statement. Participant counts no
+  longer issue two queries per account. Filters and page clamping run in the DB;
+  the app does not download whole history tables for dashboard aggregation.
+  Both STABLE security-invoker RPCs require an active admin and retain existing
+  RLS. EXECUTE is granted to authenticated only, not anon or service_role.
+- Draft `supabase/migrations/20261011220000_admin_read_performance.sql` must be
+  reviewed and separately approved before any Production use. Apply after the
+  existing schema/RLS chain (including participant activity and completion
+  objects) and `20261011193000_account_type_research_policy.sql`. The new file
+  creates read functions only; it does not change accounts, research rows,
+  tables, RLS, Auth or Storage. Missing RPCs fail explicitly; there is no silent
+  full-table fallback. Coordinate DB readiness before deploying these callers.
+  P01/T01 conversion remains a separate approval, not a prerequisite to testing
+  the RPCs with synthetic data. Excel export policy and history remain intact.
+- Optional server-only `WHY_BOX_PERFORMANCE_LOG_ENABLED=true` instruments the
+  SSR Supabase client's outgoing HTTP requests. Default is off. Each record
+  contains a random correlation ID, `proxy` or `server` scope, category
+  (`auth`, `db`, `storage`, `other`), response-header duration, category count,
+  cumulative duration and failure boolean. It never records URLs, request
+  headers/bodies, user/session UUIDs, credentials, or response/research text. Proxy and
+  render IDs are deliberately separate; route handlers without a React render
+  cache get their own client-local metrics. Parallel durations must not be
+  added to estimate page wall time. These are HTTP timings, not SQL execution
+  time or OpenAI provider timings. Enabling Production logs needs separate
+  environment/deployment approval and an appropriate log retention policy.
+- `node --test tests/request-performance.test.mjs` checks real Next RSC
+  request-cache isolation and compares the same synthetic session fixture
+  against the previously deployed reader. Simulated network latency is clearly
+  labeled and is not a Production speedup guarantee. No real Supabase or
+  OpenAI calls are made.
+- `tests/account-type-native.test.mjs` validates the draft admin RPCs on a
+  disposable PostgreSQL cluster using a private Unix socket. It checks RLS and
+  admin-only access, stable pagination/activity, unchanged data hashes,
+  migration rollback, and native dashboard/Excel data parity. Its benchmark
+  adds synthetic accounts/sessions inside a rolled-back transaction. `psql`
+  timing includes statement execution, result serialization and local client
+  roundtrip overhead (not connection startup); it is not pure SQL execution
+  time, Production HTTP latency, or a statistical performance guarantee.
 
 ## Phase 1 foundation
 
