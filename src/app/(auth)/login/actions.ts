@@ -1,6 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { z } from "zod";
 import { loginIdentifierToAuthEmail } from "@/lib/auth/identity";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { reportError } from "@/lib/errors/report";
@@ -19,10 +20,21 @@ export async function signIn(formData: FormData) {
   }
 
   let email: string;
-  try {
-    email = loginIdentifierToAuthEmail(identifier);
-  } catch {
-    redirect("/login?error=AUTH-001");
+  if (identifier.trim().toLowerCase() === "admin") {
+    const configuredEmail = z.email().safeParse(
+      process.env.WHY_BOX_ADMIN_AUTH_EMAIL?.trim(),
+    );
+    if (!configuredEmail.success) {
+      await reportError("AUTH-004", "login.admin_alias.config");
+      redirect("/login?error=AUTH-004");
+    }
+    email = configuredEmail.data;
+  } else {
+    try {
+      email = loginIdentifierToAuthEmail(identifier);
+    } catch {
+      redirect("/login?error=AUTH-001");
+    }
   }
 
   const supabase = await createSupabaseServerClient({ allowCookieWrites: true });

@@ -4,6 +4,18 @@ WHY BOX is a research tool for supporting designers' reflective thinking. The au
 
 ## Production release preflight (2026-10-10)
 
+### Administrator login alias
+
+Set server-only `WHY_BOX_ADMIN_AUTH_EMAIL` to the existing administrator's Auth
+email to accept `admin` (case-insensitive, surrounding whitespace ignored) on the
+login screen. Never commit the value or expose it with `NEXT_PUBLIC_`. Configure
+it for Vercel Production only, not Preview with Production account information.
+The alias does not change Auth users, passwords, profiles or roles: Supabase still
+checks the password and the authenticated UUID's active profile determines access.
+Existing email and `P01` participant logins are unchanged. Missing/invalid alias
+configuration reports `AUTH-004` without attempting authentication; other login
+formats remain available. Configuration and deployment require separate approval.
+
 **Local implementation and offline validation complete; remote release still approval-gated.** A successful build does not verify the
 hosted database, live AI behavior, or the complete participant journey.
 GitHub push, Production DB/Auth/Storage changes, Vercel deployment/deletion,
