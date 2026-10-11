@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Toast } from "@/app/toast";
@@ -13,6 +13,7 @@ import {readRegenerationResult,waitForRegeneration,regenerationErrorMessage} fro
 import { DiaryPanel } from "./diary-panel";
 import { canShowBriefing, questionSessionStatus } from "@/lib/session-completion/display-state";
 import { QuestionBubble } from "./question-bubble";
+import { layoutQuestionPins } from "@/lib/question-generation/pin-layout";
 import { z } from "zod";
 
 const refinementUnavailableMessage="문장 다듬기가 아직 활성화되지 않았거나 설정을 확인할 수 없습니다.";
@@ -182,6 +183,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   const headerRef=useRef<HTMLDivElement>(null);
   const imageFrameRef=useRef<HTMLDivElement>(null);
   const [bubble,setBubble]=useState<{questionId:string;imageId:string;anchor:HTMLButtonElement}|null>(null);
+  const [imageFrameSize,setImageFrameSize]=useState({width:0,height:0});
   const answerDiffRef=useRef<HTMLDivElement>(null);
   const [navigationBusy,setNavigationBusy]=useState(false);
   const navigationBusyRef=useRef(false);
@@ -218,7 +220,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
           reserveCount===0&&!apiCapabilities?.ready?questionActionMessages["QA-RESERVE"]:
             reserveCount===0&&apiCapabilities?.calls_remaining===0?regenerationErrorMessage("QR-CALL-LIMIT"):"";
 
-  useEffect(()=>{
+  useLayoutEffect(()=>{
     if(focusAfterAction)headerRef.current?.focus();
   },[focusAfterAction]);
 
@@ -720,6 +722,21 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   const status=current?saveStatus[current.id]??"저장됨":"저장됨";
   const refinedAvailable=!!currentAnswer?.refinement_used && currentAnswer.refined_answer!==null;
   const actionToastMessage=actionNotice;
+  useEffect(()=>{
+    const frame=imageFrameRef.current;
+    if(!frame)return;
+    const measure=()=>setImageFrameSize(previous=>previous.width===frame.clientWidth&&
+      previous.height===frame.clientHeight?previous:{width:frame.clientWidth,height:frame.clientHeight});
+    measure();
+    if(typeof ResizeObserver==="undefined")return;
+    const observer=new ResizeObserver(measure);
+    observer.observe(frame);
+    return ()=>observer.disconnect();
+  },[activeImageId]);
+  const pinLayout=layoutQuestionPins(imageFrameSize,pins.map(({question,target})=>({
+    id:`${question.id}:${target.sort_order}`,questionId:question.id,slot:question.slot_index,
+    x:target.x!+target.width!/2,y:target.y!+target.height!/2,
+  })));
 
   function notifyRefinement(questionId:string,message:string,error=false) {
     const revision=++refinementNoticeSequence.current;
@@ -751,6 +768,15 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
               }}
               alt={`업로드한 디자인 이미지 ${shownImage.sort_order+1}`} />
             <div className="question-image-pins" aria-label="질문 위치">
+              {pinLayout.some(pin=>Math.hypot(pin.left-pin.originalX,pin.top-pin.originalY)>3)?
+                <svg className="question-pin-connectors" viewBox={`0 0 ${imageFrameSize.width||1} ${imageFrameSize.height||1}`}
+                  preserveAspectRatio="none" aria-hidden="true">
+                  {pinLayout.filter(pin=>Math.hypot(pin.left-pin.originalX,pin.top-pin.originalY)>3).map(pin=>
+                    <g key={pin.id}>
+                      <circle cx={pin.originalX} cy={pin.originalY} r="3" />
+                      <line x1={pin.originalX} y1={pin.originalY} x2={pin.left} y2={pin.top} />
+                    </g>)}
+                </svg>:null}
               {wholeImageQuestions.length>0?<div className="question-whole-image-pins">
                 {wholeImageQuestions.map(question=><button type="button" key={question.id}
                   className={`question-pin question-whole-image-pin${question.id===current?.id?" is-active":""}`}
@@ -761,18 +787,24 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
                   disabled={navigationLocked}
                   onClick={event=>void goToPin(question,activeImageId,event.currentTarget)}>{question.slot_index}</button>)}
               </div>:null}
-              {pins.map(({question,target})=><button type="button" key={`${question.id}:${target.image_id}`}
+              {pins.map(({question,target})=>{const display=pinLayout.find(pin=>pin.id===`${question.id}:${target.sort_order}`);return <button type="button" key={`${question.id}:${target.image_id}:${target.sort_order}`}
                 className={`question-pin${question.id===current?.id?" is-active":""}`}
-                style={{left:`${(target.x!+target.width!/2)*100}%`,top:`${(target.y!+target.height!/2)*100}%`}}
+                style={display?{left:display.left,top:display.top}:{
+                  left:`${(target.x!+target.width!/2)*100}%`,
+                  top:`${(target.y!+target.height!/2)*100}%`,
+                }}
                 aria-label={`질문 ${question.slot_index} 위치 보기`}
                 aria-current={question.id===current?.id?"true":undefined}
                 aria-expanded={bubble?.questionId===question.id&&bubble.imageId===activeImageId}
                 aria-controls={bubble?.questionId===question.id?"question-pin-bubble":undefined}
                 disabled={navigationLocked}
-                onClick={event=>void goToPin(question,activeImageId,event.currentTarget)}>{question.slot_index}</button>)}
+                onClick={event=>void goToPin(question,activeImageId,event.currentTarget)}>{question.slot_index}</button>;})}
             </div>
             {bubble&&bubble.imageId===activeImageId&&bubble.questionId===current?.id?
               <QuestionBubble frame={imageFrameRef} anchor={bubble.anchor} question={current}
+                obstacles={pinLayout.filter(pin=>pin.questionId!==current.id).map(pin=>({
+                  left:pin.left-19,right:pin.left+19,top:pin.top-19,bottom:pin.top+19,
+                }))}
                 onClose={()=>{setBubble(null);bubble.anchor.focus();}} />:null}
           </div>:<p role="alert">질문에 연결된 이미지를 불러오지 못했습니다. 페이지를 새로고침해주세요.</p>}
         </div>

@@ -4,10 +4,11 @@ import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { bubblePosition } from "@/lib/question-generation/bubble-position";
 import type { DisplayQuestion } from "@/lib/question-generation/view-contract";
 
-export function QuestionBubble({ frame, anchor, question, onClose }: {
+export function QuestionBubble({ frame, anchor, question, obstacles, onClose }: {
   frame: RefObject<HTMLDivElement | null>;
   anchor: HTMLButtonElement;
   question: DisplayQuestion;
+  obstacles: Array<{ left: number; right: number; top: number; bottom: number }>;
   onClose: () => void;
 }) {
   const element = useRef<HTMLDivElement>(null);
@@ -30,7 +31,13 @@ export function QuestionBubble({ frame, anchor, question, onClose }: {
       const next = bubblePosition({ width: bounds.width * scaleX, height: bounds.height * scaleY }, {
         left: (pin.left - bounds.left) * scaleX, right: (pin.right - bounds.left) * scaleX,
         top: (pin.top - bounds.top) * scaleY, bottom: (pin.bottom - bounds.top) * scaleY,
-      }, (bubble.querySelector("p")?.scrollHeight ?? bubble.scrollHeight) + 32);
+      }, (bubble.querySelector("p")?.scrollHeight ?? bubble.scrollHeight) + 32,
+      obstacles.map(obstacle=>({
+        left:(obstacle.left+box.left-bounds.left)*scaleX,
+        right:(obstacle.right+box.left-bounds.left)*scaleX,
+        top:(obstacle.top+box.top-bounds.top)*scaleY,
+        bottom:(obstacle.bottom+box.top-bounds.top)*scaleY,
+      })));
       next.left += (bounds.left - box.left) * scaleX;
       next.top += (bounds.top - box.top) * scaleY;
       setPosition(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
@@ -48,7 +55,7 @@ export function QuestionBubble({ frame, anchor, question, onClose }: {
       window.removeEventListener("resize", measure);
       window.visualViewport?.removeEventListener("resize", measure);
     };
-  }, [frame, anchor, question.question_text]);
+  }, [frame, anchor, question.question_text, obstacles]);
   return <div ref={element} id="question-pin-bubble" className="question-bubble"
     role="region" aria-label={`질문 ${question.slot_index} 말풍선`}
     style={position ? { left: position.left, top: position.top, width: position.width,

@@ -1553,6 +1553,107 @@ test("summary-ready sessions remain read-only without prematurely reading or exp
     assert.equal(ui.host.querySelector(".question-bubble"),null);
   });
 
+test("display pin layout separates dense mobile targets without mutating persisted coordinates",()=>{
+  const {layoutQuestionPins}=load("src/lib/question-generation/pin-layout.ts");
+  const original=[
+    {id:"q1",slot:1,x:.50,y:.50},
+    {id:"q3",slot:3,x:.505,y:.51},
+    {id:"q5",slot:5,x:.495,y:.49},
+    {id:"edge1",slot:2,x:0,y:0},
+    {id:"edge2",slot:4,x:.01,y:.01},
+  ];
+  const before=structuredClone(original);
+  for(const frame of [
+    {name:"390px mobile",width:308,height:231},
+    {name:"tablet",width:560,height:420},
+    {name:"PC",width:900,height:675},
+  ]) {
+    const displayed=layoutQuestionPins(frame,original);
+    assert.equal(displayed.length,original.length);
+    for(const pin of displayed) {
+      assert.ok(pin.left>=19&&pin.left<=frame.width-19);
+      assert.ok(pin.top>=19&&pin.top<=frame.height-19);
+    }
+    for(let i=0;i<displayed.length;i++)for(let j=i+1;j<displayed.length;j++)
+      assert.ok(Math.hypot(displayed[i].left-displayed[j].left,displayed[i].top-displayed[j].top)>=43.99,
+        `${frame.name} pins ${displayed[i].id}/${displayed[j].id} overlap`);
+    const moved=displayed.filter(pin=>Math.hypot(pin.left-pin.originalX,pin.top-pin.originalY)>3);
+    const maxDrift=Math.max(0,...displayed.map(pin=>Math.hypot(pin.left-pin.originalX,pin.top-pin.originalY)));
+    assert.ok(moved.length<=original.length);
+    assert.ok(maxDrift<=frame.width*.25,`${frame.name} connector length ${maxDrift}px is excessive`);
+  }
+  assert.deepEqual(original,before);
+});
+
+test("dense displayed pins track responsive image sizes and still select their own questions",async t=>{
+  const input=view("completed",5);
+  for(const [index,x] of [.5,.505,.495,.51,.49].entries()) {
+    input.questions[index].targets[0].x=x;
+    input.questions[index].targets[0].y=[.5,.51,.49,.495,.505][index];
+  }
+  const storedTargets=structuredClone(input.questions.map(question=>question.targets));
+  const ui=await mountResult(t,input);
+  const frame=ui.host.querySelector(".question-image-frame");
+  let width=308,height=231;
+  Object.defineProperties(frame,{clientWidth:{configurable:true,get:()=>width},
+    clientHeight:{configurable:true,get:()=>height}});
+  const resize=async()=>act(async()=>{
+    for(const observer of ui.observers)if(observer.active)observer.callback();
+    await settle();
+  });
+  await resize();
+  const readPositions=()=>[...ui.host.querySelectorAll(".question-image-pins > button.question-pin:not(.question-whole-image-pin)")]
+    .map(button=>({button,left:parseFloat(button.style.left),top:parseFloat(button.style.top)}));
+  const mobile=readPositions();
+  for(let i=0;i<mobile.length;i++)for(let j=i+1;j<mobile.length;j++)
+    assert.ok(Math.hypot(mobile[i].left-mobile[j].left,mobile[i].top-mobile[j].top)>=43.99);
+  const movedCount=mobile.filter(({button,left,top})=>{
+    const target=input.questions[Number(button.textContent)-1].targets[0];
+    return Math.hypot(left-(target.x+target.width/2)*width,top-(target.y+target.height/2)*height)>3;
+  }).length;
+  assert.equal(ui.host.querySelectorAll(".question-pin-connectors line").length,movedCount);
+  width=560;height=420;
+  await resize();
+  const tablet=readPositions();
+  assert.ok(tablet.some((pin,index)=>pin.left!==mobile[index].left||pin.top!==mobile[index].top));
+  width=900;height=675;
+  await resize();
+  const desktop=readPositions();
+  assert.ok(desktop.every(pin=>pin.left>=19&&pin.left<=width-19&&pin.top>=19&&pin.top<=height-19));
+  assert.deepEqual(input.questions.map(question=>question.targets),storedTargets);
+  for(const question of input.questions) {
+    const pin=ui.host.querySelector(`[aria-label="질문 ${question.slot_index} 위치 보기"]`);
+    await act(async()=>{pin.click();await settle();});
+    assert.equal(ui.host.querySelector(".question-bubble")?.getAttribute("aria-label"),
+      `질문 ${question.slot_index} 말풍선`);
+    assert.equal(ui.host.querySelector(`[aria-label="질문 ${question.slot_index} 위치 보기"]`)
+      .getAttribute("aria-current"),"true");
+  }
+});
+
+test("bubble chooses an in-frame position that avoids nearby pin hit areas when possible",()=>{
+  const {bubblePosition}=load("src/lib/question-generation/bubble-position.ts");
+  for(const frame of [{width:308,height:231},{width:560,height:420},{width:900,height:675}]) {
+    for(const pin of [
+      {left:0,right:38,top:0,bottom:38},
+      {left:frame.width/2-19,right:frame.width/2+19,top:frame.height/2-19,bottom:frame.height/2+19},
+      {left:frame.width-38,right:frame.width,top:frame.height-38,bottom:frame.height},
+    ]) {
+      const obstacles=[
+        {left:frame.width/2-19,right:frame.width/2+19,top:frame.height/2-19,bottom:frame.height/2+19},
+        {left:frame.width/2+25,right:frame.width/2+63,top:frame.height/2-19,bottom:frame.height/2+19},
+      ];
+      const bubble=bubblePosition(frame,pin,80,obstacles);
+      assert.ok(bubble.left>=0&&bubble.top>=0);
+      assert.ok(bubble.left+bubble.width<=frame.width);
+      assert.ok(bubble.top+bubble.maxHeight<=frame.height);
+      assert.ok(obstacles.every(obstacle=>bubble.left+bubble.width<=obstacle.left||
+        bubble.left>=obstacle.right||bubble.top+bubble.maxHeight<=obstacle.top||
+        bubble.top>=obstacle.bottom));
+    }
+  }
+});
+
   test("failed completion retains question selection and answers without exposing or fetching briefing",async(t)=>{
     const input=view("completed");
     input.questions=input.questions.map((q,index)=>({...q,status:index===0?"answered":"skipped",
