@@ -26,6 +26,7 @@ function setup(autoStart) {
   }).outputText;
   const module = { exports: {} };
   const mocks = { react: hooks, "@/app/toast": { Toast: () => null }, "./actions": { createDraftSession: "existing-action" },
+    "@/app/loading-state": { LoadingState: () => null },
     "@/lib/forms": { initialFormResult: { message: "" } } };
   runInThisContext(`(function(require,module,exports){${compiled}\n})`)(
     (name) => Object.hasOwn(mocks, name) ? mocks[name] : require(name), module, module.exports);
@@ -80,7 +81,8 @@ test("home opens the latest owned unfinished session without inserting and creat
   assert.ok(calls.some((call) => call[0] === "order" && call[1] === "updated_at" && !call[2].ascending));
   data = [];
   const page = await Page();
-  const form = page.props.children.find((node) => node?.type === Form);
+  const pageChildren = Array.isArray(page.props.children) ? page.props.children : [page.props.children];
+  const form = pageChildren.find((node) => node?.type === Form);
   assert.equal(form.props.autoStart, true);
   error = { message: "DB failure" };
   await assert.rejects(Page(), /Unable to load/);
@@ -179,6 +181,9 @@ test("completed session detail loads the saved question result without mounting 
 
 test("direct new-session route starts once even if Strict Mode replays the effect", () => {
   const s = setup(true);
+  assert.equal(s.element.props.children[0].type.name, "LoadingState");
+  assert.equal(s.element.props.children[0].props.children, "이전 작업을 확인하고 새 성찰을 준비하고 있어요.");
+  assert.notEqual(s.element.props.children[0].type, "button");
   s.effects.forEach((effect) => { effect(); effect(); });
   assert.equal(s.submissions, 1);
   const page = readFileSync(new URL("../src/app/(participant)/sessions/new/page.tsx", import.meta.url), "utf8");

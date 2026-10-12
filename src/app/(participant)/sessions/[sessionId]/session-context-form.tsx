@@ -12,7 +12,7 @@ import { Toast } from "@/app/toast";
 import { useRouter } from "next/navigation";
 import { CategorySelect } from "@/app/category-select";
 
-export function SessionContextForm({ sessionId, initial, initialSavedAt, editable, activeStep, imageCount = null, imageRevision = "", onValueChange, onSaveStateChange, onRetryReady, onDraftStateChange, hasUnsavedChanges }: {
+export function SessionContextForm({ sessionId, initial, initialSavedAt, editable, activeStep, imageCount = null, imageRevision = "", onValueChange, onSaveStateChange, onRetryReady, onDraftStateChange, hasUnsavedChanges, lockedMessage }: {
   sessionId: string; initial: SessionContextInput; editable: boolean;
   activeStep: SessionStep; onValueChange?: (value: SessionContextInput) => void;
   imageCount?: number | null; imageRevision?: string;
@@ -20,6 +20,7 @@ export function SessionContextForm({ sessionId, initial, initialSavedAt, editabl
   onRetryReady?: (retry: (() => void) | null) => void;
   onDraftStateChange?: (state: DraftViewState) => void;
   hasUnsavedChanges?: () => boolean;
+  lockedMessage?: string;
 }) {
   const [value, setValue] = useState(initial);
   const [state, setState] = useState<SaveState>({ status: "저장됨", message: "", savedAt: initialSavedAt });
@@ -117,7 +118,9 @@ export function SessionContextForm({ sessionId, initial, initialSavedAt, editabl
             }
           }}>확인</button>
         </>} /> : null}
-      {!editable ? <p>질문 생성 이후 또는 완료된 세션의 입력 정보는 변경할 수 없습니다.</p> : null}
+      {!editable ? <p role="status" className="context-lock-notice">
+        {lockedMessage ?? "질문 생성 이후 또는 완료된 세션의 입력 정보는 변경할 수 없습니다."}
+      </p> : null}
       <div className="session-context work-info content-stack wizard-panel" hidden={activeStep !== 2}>
       <fieldset disabled={!editable} className="context-fields">
         <legend>디자인 분류</legend>

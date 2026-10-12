@@ -15,6 +15,7 @@ import { QuestionResult } from "./question-result";
 import { questionSessionStatus } from "@/lib/session-completion/display-state";
 import { QuestionGenerationLoading } from "./question-generation-loading";
 import { sessionContextSchema } from "@/lib/session-context/input";
+import { LoadingState } from "@/app/loading-state";
 
 export function SessionWizard({ sessionId, initial, initialSavedAt, initialGeneration, sessionStatus }: {
   sessionId: string; initial: SessionContextInput;
@@ -113,7 +114,7 @@ export function SessionWizard({ sessionId, initial, initialSavedAt, initialGener
   if (generation.view.state === "completed") {
     return <QuestionResult result={generation.view} sessionStatus={questionSessionStatus(sessionStatus)} />;
   }
-  if (!stepReady) return <p role="status">마지막 작업 단계를 불러오고 있어요.</p>;
+  if (!stepReady) return <LoadingState>마지막 작업 단계를 불러오고 있어요.</LoadingState>;
 
   return (
     <>
@@ -136,6 +137,8 @@ export function SessionWizard({ sessionId, initial, initialSavedAt, initialGener
         initialSavedAt={initialSavedAt} onSaveStateChange={changeSaveState} onRetryReady={setRetry}
         onDraftStateChange={changeDraftState}
         hasUnsavedChanges={hasCountChanges}
+        lockedMessage={generation.view.state === "recovery" ?
+          "질문 생성 상태를 확인하고 있어요. 확인이 끝나면 입력 가능 여부를 안내합니다." : undefined}
         activeStep={step} imageCount={imageCount} imageRevision={imageRevision} onValueChange={setValue} />
       {generation.view.state === "recovery" ? <section className="summary-card content-stack" role="status" aria-live="polite">
         <h2 className="card-title">질문 생성 상태 확인</h2>

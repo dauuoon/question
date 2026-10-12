@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { File } from "node:buffer";
 import { URL } from "node:url";
 import test from "node:test";
-import { prepareImageUploads, unsavedImageUploads } from "../src/lib/images/upload-request.ts";
+import { mapConcurrent, prepareImageUploads, unsavedImageUploads } from "../src/lib/images/upload-request.ts";
 import { MAX_IMAGE_BYTES, MAX_IMAGE_COUNT, validateImageFile } from "../src/lib/images/limits.ts";
 
 test("retries retain the same request ID and file", () => {
@@ -19,6 +19,20 @@ test("retries retain the same request ID and file", () => {
   assert.equal(retry[0], uploads[1]);
   assert.equal(retry[0].file, files[1]);
   assert.equal(retry[0].requestId, uploads[1].requestId);
+});
+
+test("upload work is concurrency-limited and preserves request order", async () => {
+  let active = 0, maximum = 0;
+  const results = await mapConcurrent([0, 1, 2, 3, 4], 2, async (value) => {
+    active++;
+    maximum = Math.max(maximum, active);
+    await new Promise(resolve => globalThis.setTimeout(resolve, value === 0 ? 5 : 1));
+    active--;
+    return value * 2;
+  });
+  assert.equal(maximum, 2);
+  assert.deepEqual(results, [0, 2, 4, 6, 8]);
+  await assert.rejects(mapConcurrent([], 0, async value => value), RangeError);
 });
 
 test("a committed upload with a lost response is excluded after reconciliation", () => {

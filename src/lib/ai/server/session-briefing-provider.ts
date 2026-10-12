@@ -9,7 +9,7 @@ import {
   briefingInputSchema,
   briefingResultSchema,
 } from "@/lib/session-completion/briefing-contract";
-import { SESSION_DESIGN_BRIEFING_PROMPT } from "@/lib/ai/prompts/session-design-briefing-v1.1";
+import { SESSION_DESIGN_BRIEFING_PROMPT } from "@/lib/ai/prompts/session-design-briefing-v1.2";
 import { SESSION_DESIGN_BRIEFING_SCHEMA } from "@/lib/ai/schemas/session-design-briefing-v1.0";
 import { SessionBriefingProviderError, type SessionBriefingProvider } from "./session-briefing-service";
 
@@ -139,8 +139,8 @@ export function createMockSessionBriefingProvider(
       }
 
       const context = input.design_context.additional_context?.trim();
-      const contextSentence = context ? `사용자는 디자인 맥락을 다음과 같이 확인했습니다: “${context}”` : "";
-      const answerSentences = answers.map((answer) => `사용자는 “${answer}”라고 설명했습니다.`);
+      const contextSentence = context ? `제가 적은 작업 맥락은 “${context}”입니다.` : "";
+      const answerSentences = answers.map((answer) => `제 답변은 “${answer}”입니다.`);
       return {
         response: {
           briefing_text: [contextSentence, ...answerSentences].filter(Boolean).join(" "),

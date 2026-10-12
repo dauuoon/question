@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const SESSION_BRIEFING_PROMPT_VERSION = "session-design-briefing-v1.1";
+export const SESSION_BRIEFING_PROMPT_VERSION = "session-design-briefing-v1.2";
 export const SESSION_BRIEFING_SCHEMA_VERSION = "why_box_session_design_briefing_v1_0";
 
 export const briefingStateSchema = z.enum([

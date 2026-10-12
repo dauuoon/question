@@ -420,6 +420,7 @@ test("wizard retains component positions, validates Next, exposes progress and g
   const SessionContextForm = () => null;
   const { SessionWizard } = load("../src/app/(participant)/sessions/[sessionId]/session-wizard.tsx", {
     react: hooks,
+    "@/app/loading-state": { LoadingState: () => null },
     "@/lib/session-context/wizard": wizard,
     "./image-uploader": { ImageUploader },
     "./session-context-form": { SessionContextForm },
@@ -542,6 +543,7 @@ test("wizard restores session-specific steps before mounting AI form and explici
     const SessionContextForm = () => null;
     const { SessionWizard } = load("../src/app/(participant)/sessions/[sessionId]/session-wizard.tsx", {
       react: hooks, "@/lib/session-context/wizard": wizard,
+      "@/app/loading-state": { LoadingState: () => null },
       "./image-uploader": { ImageUploader: () => null }, "./session-context-form": { SessionContextForm },
       "@/lib/session-context/autosave": { Autosave: class { dispose() {} } },
       "@/lib/session-context/input": input,

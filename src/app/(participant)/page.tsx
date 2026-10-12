@@ -10,10 +10,5 @@ export default async function ParticipantHomePage() {
   if (error) throw new Error("Unable to load the latest in-progress session.");
   if (sessions?.[0]) redirect(`/sessions/${sessions[0].id}`);
 
-  return (
-    <section className="content-stack">
-      <p role="status" className="supporting-copy">1단계 이미지 입력을 준비하고 있어요.</p>
-      <CreateSessionForm autoStart label="다시 시도" />
-    </section>
-  );
+  return <section className="content-stack"><CreateSessionForm autoStart label="다시 시도" /></section>;
 }

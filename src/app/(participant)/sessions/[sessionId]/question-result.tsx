@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Toast } from "@/app/toast";
+import { LoadingState } from "@/app/loading-state";
 import { questionActionResponseSchema, type DisplayImage, type DisplayQuestion, type GenerationView } from "@/lib/question-generation/view-contract";
 import { AnswerAutosave, type AnswerDraft, type AnswerSaveStatus, type AnswerVersion } from "@/lib/answers/autosave";
 import { answerSaveErrorMessages } from "@/lib/answers/contract";
@@ -166,7 +167,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   const [briefingDraft,setBriefingDraft]=useState("");
   const [briefingSaving,setBriefingSaving]=useState(false);
   const [briefingDirtyNotice,setBriefingDirtyNotice]=useState("");
-  const [copyNotice,setCopyNotice]=useState("");
+  const [copyNotice,setCopyNotice]=useState<{message:string;error:boolean}|null>(null);
   const [completionState,setCompletionState]=useState<CompletionUIState>("idle");
   const [completionMessage,setCompletionMessage]=useState("");
   const [completionMissing,setCompletionMissing]=useState<string[]>([]);
@@ -521,6 +522,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
     completionBusyRef.current=true;
     setNavigationBusy(true);
     setCompletionState("checking");
+    setCompletionMessage("답변을 저장하고 확인하고 있어요.");
     const saved=await autosave.current?.flushAll();
     if(!saved) {
       completionBusyRef.current=false;setNavigationBusy(false);
@@ -615,11 +617,12 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
 
   async function copyBriefing() {
     if(!briefing)return;
+    setCopyNotice(null);
     try {
       await navigator.clipboard.writeText(briefing.current);
-      setCopyNotice("브리핑을 복사했어요.");
+      setCopyNotice({message:"디자인 브리핑 전체를 복사했어요.",error:false});
     } catch {
-      setCopyNotice("클립보드에 복사하지 못했습니다. 브리핑을 선택해 복사해주세요.");
+      setCopyNotice({message:"클립보드에 복사하지 못했습니다. 브리핑을 선택해 복사해주세요.",error:true});
     }
   }
 
@@ -860,7 +863,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
                 </svg>
               </button>
             </div>
-            {!briefing&&briefingLoading?<p role="status">저장된 디자인 브리핑을 불러오고 있어요.</p>:null}
+            {!briefing&&briefingLoading?<LoadingState>저장된 디자인 브리핑을 불러오고 있어요.</LoadingState>:null}
             {!briefing&&briefingMessage?<div role="alert" className="briefing-notice">
               <p>{briefingMessage}</p>
               <button type="button" className="button-secondary" onClick={()=>void fetchBriefing()}>다시 불러오기</button>
@@ -893,7 +896,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
                 onClick={()=>{setBriefingDraft(briefing.current);setBriefingEditing(true);setBriefingDirtyNotice("");}}>
                 수정하기
               </button>}
-              {copyNotice?<p role="status" className="briefing-notice">{copyNotice}</p>:null}
+              <Toast message={copyNotice?.message??""} error={copyNotice?.error??false} />
             </>:null}
             {briefing?<DiaryPanel sessionId={result.session_id}
               active={activeTab==="summary"&&!briefingLoading&&!briefingEditing} />:null}
@@ -903,6 +906,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
           <div className="question-actions">
             <button type="button" className="question-text-action" aria-label="현재 질문 재생성"
               title={regenerationUnavailableMessage||undefined}
+              aria-busy={questionAction==="regenerate"}
               aria-disabled={!!regenerationUnavailableMessage||navigationLocked}
               disabled={navigationLocked||sessionFinished}
               onClick={()=>{
@@ -912,13 +916,16 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
                 }
                 void applyQuestionAction("regenerate");
               }}>
-              <span aria-hidden="true">↻</span> {questionAction==="regenerate"?"질문을 바꾸는 중...":"질문 재생성"}
+              <span aria-hidden="true">↻</span> {questionAction==="regenerate"?
+                <LoadingState variant="button">질문을 바꾸는 중…</LoadingState>:"질문 재생성"}
             </button>
             <button type="button" className="question-text-action" aria-label="현재 질문 건너뛰기"
+              aria-busy={questionAction==="skip"}
               disabled={sessionFinished||!result.question_actions.ready||!result.answer_editable||hasWrittenAnswer||
                 current.status==="skipped"||navigationLocked}
               onClick={()=>void applyQuestionAction("skip")}>
-              <span aria-hidden="true">↪</span> {questionAction==="skip"?"질문을 건너뛰는 중...":"질문 건너뛰기"}
+              <span aria-hidden="true">↪</span> {questionAction==="skip"?
+                <LoadingState variant="button">질문을 건너뛰는 중…</LoadingState>:"질문 건너뛰기"}
             </button>
           </div>
           {actionToastMessage?<Toast key={actionToastMessage} message={actionToastMessage}
@@ -981,7 +988,9 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
                   disabled={!answerWritable || !answerText.trim() || navigationLocked}
                   onClick={()=>void refineCurrentAnswer()}>
                   <span className="question-refine-icon" aria-hidden="true">✦</span>
-                  {refiningQuestion===current.id?"문장을 정리하고 있어요...":"문장다듬기"}
+                  <span className="question-refine-label">
+                    {refiningQuestion===current.id?"문장을 정리하고 있어요...":"문장다듬기"}
+                  </span>
                 </button>
               </div>
             </div>
@@ -997,7 +1006,8 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
       {completionMessage&&completionState!=="unknown"&&completionState!=="pending"?
         <div className={`completion-status${completionState==="failed"?" is-error":""}`}
           role={completionState==="failed"?"alert":"status"} aria-live="polite">
-        <p>{completionMessage}</p>
+        {completionState==="checking"||completionState==="loading"?
+          <LoadingState>{completionMessage}</LoadingState>:<p>{completionMessage}</p>}
         {completionMissing.length>0?<ul className="completion-missing-questions">
           {completionMissing.map(id=>{
             const question=questions.find(item=>item.id===id);
@@ -1044,9 +1054,11 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
         <p>답변을 저장한 뒤 세션을 완료하고 디자인 브리핑을 준비합니다.<br />
           완료 후 질문과 답변은 읽기 전용이 됩니다.</p>
         <div className="session-dialog-actions">
-          <button type="button" className="button-secondary" onClick={()=>setFinishDialog(false)}>계속 작성</button>
+          <button type="button" className="button-secondary" disabled={completionBusyRef.current}
+            onClick={()=>setFinishDialog(false)}>계속 작성</button>
           <button type="button" disabled={completionBusyRef.current}
-            onClick={()=>void validateAndComplete()}>세션 종료</button>
+            onClick={()=>void validateAndComplete()}>{completionBusyRef.current?
+              <LoadingState variant="button">답변을 저장하고 있어요.</LoadingState>:"세션 종료"}</button>
         </div>
       </section>
     </div>:null}

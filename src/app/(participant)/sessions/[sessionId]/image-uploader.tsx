@@ -6,10 +6,11 @@ import { Toast } from "@/app/toast";
 import { errorCatalog, getErrorDefinition } from "@/lib/errors/catalog";
 import { MAX_IMAGE_COUNT, validateImageFile, type SessionImage } from "@/lib/images/limits";
 import {
-  prepareImageUploads, unsavedImageUploads, type PendingImageUpload,
+  mapConcurrent, prepareImageUploads, unsavedImageUploads, type PendingImageUpload,
 } from "@/lib/images/upload-request";
 import { uploadImageDirect } from "@/lib/images/direct-upload";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { LoadingState } from "@/app/loading-state";
 
 const listSchema = z.object({
   images: z.array(z.object({
@@ -19,6 +20,7 @@ const listSchema = z.object({
   deletionEnabled: z.boolean().optional(),
 });
 const errorSchema = z.object({ errorCode: z.string(), message: z.string(), retryable: z.boolean() });
+const MAX_CONCURRENT_IMAGE_UPLOADS = 3;
 
 export function ImageUploader({ sessionId, editable, onImageCountChange, onImageRevisionChange, onAvailabilityChange }: {
   sessionId: string; editable: boolean; onImageCountChange?: (count: number) => void;
@@ -121,42 +123,48 @@ export function ImageUploader({ sessionId, editable, onImageCountChange, onImage
     setBusy(true);
     setMessage("");
     setFailedUploads([]);
-    let saved = 0;
-    let activityWarning = false;
     try {
-      for (let index = 0; index < pending.length; index++) {
-        let response: Response;
+      const client = createSupabaseBrowserClient();
+      let stopScheduling = false;
+      const outcomes = await mapConcurrent(pending, MAX_CONCURRENT_IMAGE_UPLOADS, async (upload) => {
+        if (stopScheduling) return { kind: "skipped" as const };
         try {
-          response = await uploadImageDirect(createSupabaseBrowserClient(), sessionId, pending[index]);
-        } catch {
-          // Keep IDs across ambiguous responses so retries cannot consume another slot.
-          setFailedUploads(pending.slice(index));
-          setMessage(`${errorCatalog["NETWORK-001"].participantMessage} 실패한 이미지 다시 시도를 눌러주세요. (NETWORK-001)`);
-          const savedIds = await refresh();
-          setFailedUploads(unsavedImageUploads(pending.slice(index), savedIds));
-          return;
-        }
-        if (!response.ok) {
-          setFailedUploads(pending.slice(index));
-          const parsed = errorSchema.safeParse(await response.json());
-          setMessage(parsed.success ? parsed.data.message : `${errorCatalog["UPLOAD-001"].participantMessage} (UPLOAD-001)`);
-          if (parsed.success && !parsed.data.retryable) setFailedUploads([]);
-          const savedIds = await refresh();
-          if (!parsed.success || parsed.data.retryable) {
-            setFailedUploads(unsavedImageUploads(pending.slice(index), savedIds));
+          const response = await uploadImageDirect(client, sessionId, upload);
+          if (!response.ok) {
+            const parsed = errorSchema.safeParse(await response.json());
+            stopScheduling = true;
+            return {
+              kind: "failed" as const, upload, retryable: !parsed.success || parsed.data.retryable,
+              message: parsed.success ? parsed.data.message :
+                `${errorCatalog["UPLOAD-001"].participantMessage} (UPLOAD-001)`,
+            };
           }
-          return;
+          const uploaded = z.object({ success: z.literal(true), activityRecorded: z.boolean() })
+            .safeParse(await response.json());
+          if (!uploaded.success) throw new Error("Invalid upload response");
+          return { kind: "saved" as const, upload, activityRecorded: uploaded.data.activityRecorded };
+        } catch {
+          stopScheduling = true;
+          return {
+            kind: "failed" as const, upload, retryable: true,
+            message: `${errorCatalog["NETWORK-001"].participantMessage} 실패한 이미지 다시 시도를 눌러주세요. (NETWORK-001)`,
+          };
         }
-        const uploaded = z.object({ success: z.literal(true), activityRecorded: z.boolean() })
-          .safeParse(await response.json());
-        if (!uploaded.success) {
-          setFailedUploads(pending.slice(index));
-          throw new Error("Invalid upload response");
+      });
+      const firstFailure = outcomes.find((outcome) => outcome.kind === "failed");
+      if (firstFailure?.kind === "failed") {
+        const start = pending.indexOf(firstFailure.upload);
+        setFailedUploads(firstFailure.retryable ? pending.slice(start) : []);
+        setMessage(firstFailure.message);
+        const savedIds = await refresh();
+        if (firstFailure.retryable) {
+          setFailedUploads(unsavedImageUploads(pending.slice(start), savedIds));
         }
-        if (!uploaded.data.activityRecorded) activityWarning = true;
-        saved++;
+        return;
       }
-      setMessage(`${saved}개 이미지를 저장했습니다.${activityWarning ?
+      const saved = outcomes.filter((outcome) => outcome.kind === "saved");
+      const activityWarning = saved.some((outcome) => outcome.kind === "saved" && !outcome.activityRecorded);
+      setMessage(`${saved.length}개 이미지를 저장했습니다.${activityWarning ?
         ` ${errorCatalog["SAVE-002"].participantMessage} (SAVE-002)` : ""}`);
       await refresh();
     } catch {
@@ -196,6 +204,8 @@ export function ImageUploader({ sessionId, editable, onImageCountChange, onImage
               aria-label="디자인 이미지 파일 선택" tabIndex={-1} accept=".jpg,.jpeg,.png,image/jpeg,image/png" multiple
               disabled={busy || deleting !== null || !ready || images.some((image) => image.deletionPending)}
               onChange={(event) => void uploadFiles(prepareImageUploads(Array.from(event.target.files ?? [])))} />
+            {busy ? <LoadingState>이미지를 저장하고 있어요.</LoadingState> :
+              !ready && !message ? <LoadingState>저장된 이미지 목록을 확인하고 있어요.</LoadingState> : null}
           </>
         ) : <p className="upload-hint">이 세션의 이미지는 변경할 수 없습니다.</p>}
         <div className="upload-details">
@@ -206,7 +216,6 @@ export function ImageUploader({ sessionId, editable, onImageCountChange, onImage
           </p> : null}
         </div>
       </div>
-      {busy || (!ready && !message) ? <Toast message="이미지를 불러오는 중입니다…" error={false} persistent /> : null}
       {message ? <Toast key={message} message={message} error={/\([A-Z]+-\d+\)/.test(message)} /> : null}
       {deleteTarget ? <Toast message="이 이미지를 삭제하시겠어요? 삭제한 이미지는 복구할 수 없습니다." error={false}
         action={<>

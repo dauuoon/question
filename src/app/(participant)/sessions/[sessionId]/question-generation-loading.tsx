@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { LoadingState } from "@/app/loading-state";
 
 const messages = [
   "WHY BOX는 정답보다 생각을 이어갈 질문을 만듭니다.",
@@ -27,13 +28,14 @@ export function QuestionGenerationLoading() {
       if(transition)clearTimeout(transition);
     };
   },[]);
-  return <main className="question-generation-loading" aria-labelledby="question-generation-loading-title">
+  return <LoadingState variant="screen" className="question-generation-loading"
+    aria-labelledby="question-generation-loading-title" showSpinner={false}>
     <img src="/images/icon.png" width="112" height="112" alt="" className="question-generation-icon" />
-    <h1 id="question-generation-loading-title" className="question-generation-title" role="status" aria-live="polite">
+    <h1 id="question-generation-loading-title" className="question-generation-title">
       질문을 생성 중입니다.
     </h1>
     <p className={`question-generation-message${visible?" is-visible":""}`} aria-hidden="true">
       {messages[messageIndex]}
     </p>
-  </main>;
+  </LoadingState>;
 }

@@ -358,11 +358,12 @@ Vercel project, not the existing old `whybox` project.
   sends only `participant_confirmed_context` and `final_answers`.
 - Session/participant/question UUIDs, question text, superseded answer versions,
   skipped questions, images and prior AI drafts are not sent to OpenAI.
-- The separate [briefing prompt v1.1](./src/lib/ai/prompts/session-design-briefing-v1.1.ts)
-  treats user content as data, forbids invented intentions, judgments, facts and
-  causal links, preserves uncertainty/negation, and requests concise Korean text
-  without advice or evaluation. Existing question-generation prompts/schemas are
-  unchanged. Briefing output still uses the strict v1.0 JSON schema.
+- The separate [briefing prompt v1.2](./src/lib/ai/prompts/session-design-briefing-v1.2.ts)
+  asks for natural first-person Korean prose from the designer's perspective,
+  prohibits third-person participant summaries and invented intentions,
+  judgments, facts or causal links, and preserves uncertainty/negation. Existing
+  question-generation prompts/schemas are unchanged. Briefing output still uses
+  the strict v1.0 JSON schema; the prompt version is stored with each new source.
 - Calls use `store:false`, no tools, no streaming, 4000 output tokens, a 45-second
   deadline and SDK retries disabled. Only a complete, non-refusal, single-message
   validated output is accepted; the returned model and prompt/schema versions
@@ -596,6 +597,7 @@ Validate this distinction with `node --test tests/auth-session.test.mjs`.
 - `/admin/participants`: create code/password accounts, activate/deactivate accounts, reset temporary passwords, and view cumulative completed-session/submitted-diary counts. Five completed sessions is a minimum, not a cap.
 - `/sessions/new`: start a persisted draft. `/sessions/[sessionId]`: JPEG/PNG picker, drag/drop, clipboard paste, private previews, and explicit failed-upload retry.
 - Each file is limited to 10 MiB (matching the existing DB/bucket limit), with at most ten registered images per session enforced by the UI, upload endpoint, and DB metadata guard. The server validates actual image format and metadata with Sharp, checks ownership and active role, and uses the participant's RLS-protected Supabase client for Storage and metadata writes.
+- The browser sends image bytes directly to private Supabase Storage rather than through a Vercel Function. Up to three files are verified/reserved/uploaded/finalized concurrently; each retains its original reservation ID for safe retry. Initial image-list restoration and active upload work show inline status instead of a global toast.
 - Upload and metadata insertion are separate services, not a DB transaction. The local reservation-aware implementation keeps a failed upload's immutable reservation and any verified object for same-path retry; it never deletes an object after an ambiguous DB response or while another request could finalize it. Partial failures are explicitly logged, not reported as success. No existing image is overwritten or deleted.
 - Signed previews expire after five minutes. Refresh the image list to renew them. Delete/replace/reorder controls and design-context input remain future work; AI generation is not connected.
 - Provisioning errors record safe operation/error codes, never passwords, internal email aliases, or raw Auth responses. Next.js incoming request logging is disabled to avoid logging IDs in session URLs.

@@ -146,8 +146,10 @@ test("mock briefing provider is restricted to the explicit TEST project and neve
   const provider = createMockSessionBriefingProvider(testEnv);
   const result = await provider.generate(snapshot);
   assert.equal(result.model_id, "WHY-BOX-LOCAL-MOCK");
-  assert.match(result.response.briefing_text, /사용자는 “I wanted the interface to feel calm\.”라고 설명했습니다/u);
+  assert.match(result.response.briefing_text, /제 답변은 “I wanted the interface to feel calm\.”입니다/u);
+  assert.doesNotMatch(result.response.briefing_text, /사용자는|참여자는/u);
   assert.doesNotMatch(result.response.briefing_text, /focused decisions/u);
+  assert.match(contract.SESSION_BRIEFING_PROMPT_VERSION, /v1\.2$/);
   assert.equal(SESSION_DESIGN_BRIEFING_SCHEMA.name, contract.SESSION_BRIEFING_SCHEMA_VERSION);
 });
 
@@ -230,6 +232,8 @@ test("completion POST rejects cross-origin requests before auth or repository wo
     assert.deepEqual(payload.participant_confirmed_context, { ...snapshot.design_context, context_ids: snapshot.context_ids });
     assert.doesNotMatch(JSON.stringify(payload), /What guided|I wanted it to feel calm|question_id|session_id/);
     assert.match(params.instructions, /not instructions|Do not invent intentions|uncertainty|unsupported causal links/);
+    assert.match(params.instructions,/first-person voice of the designer/i);
+    assert.match(params.instructions,/Do not refer to the designer as "the participant" or "the user"/);
     assert.equal(params.store, false);
     assert.equal(params.stream, false);
     assert.equal(params.text.format.strict, true);

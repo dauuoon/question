@@ -190,6 +190,7 @@ test("uploader confirms deletion, serializes requests, updates image revision an
   try {
     const { ImageUploader } = load("../src/app/(participant)/sessions/[sessionId]/image-uploader.tsx", {
       react: hooks, "@/app/toast": { Toast: () => null },
+      "@/app/loading-state": { LoadingState: (props) => ({ type: "loading-state", props }) },
       "@/lib/images/limits": { IMAGE_BUCKET, MAX_IMAGE_BYTES, MAX_IMAGE_COUNT: 10, validateImageFile },
       "@/lib/errors/catalog": requireCatalog(),
       "@/lib/images/upload-request": { prepareImageUploads: () => [], unsavedImageUploads: (uploads) => uploads },
@@ -199,8 +200,9 @@ test("uploader confirms deletion, serializes requests, updates image revision an
       onImageCountChange: (count) => counts.push(count),
     })); mounted = true; return result; };
     const initialTree = render();
-    const loading = initialTree.find((node) => node.props?.message === "이미지를 불러오는 중입니다…");
-    assert.equal(loading.props.persistent, true);
+    const loading = initialTree.find((node) => node.type?.name === "LoadingState");
+    assert.equal(loading.props.children, "저장된 이미지 목록을 확인하고 있어요.");
+    assert.equal(initialTree.some((node) => node.props?.message === "이미지를 불러오는 중입니다…"), false);
     await settle();
     let tree = render();
     const actions = tree.find((node) => node.props?.className === "image-actions");

@@ -54,6 +54,17 @@
   border-radius: var(--radius-card);
 }
 
+.loading-state { display:inline-flex; align-items:center; gap:var(--space-3); color:var(--color-text-secondary); }
+.loading-state-spinner { width:1rem; height:1rem; flex:0 0 auto; border:2px solid currentColor;
+  border-right-color:transparent; border-radius:50%; animation:loading-state-spin 800ms linear infinite; }
+.loading-state-screen { display:flex; min-height:60dvh; width:100%; padding:var(--space-8) var(--space-4);
+  flex-direction:column; align-items:center; justify-content:center; gap:var(--space-4); text-align:center;
+  color:var(--color-text-primary); }
+.loading-state-screen .loading-state-spinner { width:2rem; height:2rem; border-width:3px; }
+.loading-state-button { gap:var(--space-2); color:inherit; }
+.loading-state-button .loading-state-spinner { width:.875rem; height:.875rem; }
+@keyframes loading-state-spin { to { transform:rotate(360deg); } }
+
 .context-fields {
   display: grid;
   gap: var(--space-3);
@@ -169,7 +180,7 @@
 .question-page-button:disabled { background:transparent; color:var(--color-text-secondary); opacity:.6; }
 .question-page-button:focus-visible { outline:3px solid var(--color-focus-ring); outline-offset:1px; border-radius:50%; }
 .question-summary-tab { display:grid; width:44px; min-height:44px; padding:0; flex:0 0 44px; place-items:center; border:0; border-radius:50%; background:transparent; color:var(--color-text-secondary); }
-.question-summary-tab svg { width:30px; height:30px; padding:6px; overflow:visible; border:1px solid var(--color-border); border-radius:50%; background:var(--color-background); fill:none; stroke:currentColor; stroke-linejoin:round; stroke-width:1.5; transition:background-color 150ms ease,border-color 150ms ease,transform 150ms ease; }
+.question-summary-tab svg { width:30px; height:30px; padding:6px; overflow:visible; border:1px solid var(--color-border); border-radius:50%; background:var(--color-background); fill:currentColor; stroke:currentColor; stroke-linejoin:round; stroke-width:1.5; transition:background-color 150ms ease,border-color 150ms ease,transform 150ms ease; }
 .question-summary-tab:hover:not(:disabled) svg { transform:scale(1.06); }
 .question-summary-tab.is-active { color:var(--color-on-primary); }
 .question-summary-tab.is-active svg { border-color:var(--color-primary); background:var(--color-primary); }
@@ -178,7 +189,8 @@
 .briefing-panel { gap:var(--space-4); overflow:auto; }
 .briefing-heading { display:flex; align-items:center; justify-content:space-between; gap:var(--space-3); }
 .briefing-copy-button { display:grid; width:2.5rem; min-height:2.5rem; padding:0; flex:0 0 auto; place-items:center; border:1px solid var(--color-border); border-radius:var(--radius-control); background:var(--color-background); color:var(--color-text-primary); }
-.briefing-copy-button:hover:not(:disabled) { border-color:var(--color-primary); color:var(--color-primary-hover); }
+.briefing-copy-button:hover:not(:disabled) { background:var(--color-background); border-color:var(--color-border);
+  color:var(--color-text-primary); opacity:.7; }
 .briefing-copy-button svg { width:1.25rem; height:1.25rem; fill:none; stroke:currentColor; stroke-linecap:round; stroke-linejoin:round; stroke-width:1.7; }
 .briefing-copy-button:disabled { opacity:.55; cursor:not-allowed; }
 .briefing-text { margin:0; flex:1; color:var(--color-text-primary); font-size:var(--font-size-body); line-height:1.85; white-space:pre-wrap; overflow-wrap:anywhere; }
@@ -259,7 +271,8 @@
 .question-refine-button { position:relative; top:-8px; flex:0 0 auto; gap:0; color:#000; text-decoration:underline; text-underline-offset:3px; transition:opacity 150ms ease; }
 .question-refine-button:hover:not(:disabled) { background:transparent; color:#000; opacity:.75; }
 .question-refine-button:disabled { color:#000; opacity:1; }
-.question-refine-button[aria-busy="true"] .question-refine-icon { animation:question-refine-pulse 1200ms ease-in-out infinite; }
+.question-refine-button[aria-busy="true"] .question-refine-icon,
+.question-refine-button[aria-busy="true"] .question-refine-label { animation:question-refine-pulse 1200ms ease-in-out infinite; }
 @keyframes question-refine-pulse { 50% { opacity:.4; } }
 .participant-shell[data-theme="dark"] .question-refine-button { color:#fff; }
 .participant-shell[data-theme="dark"] .question-answer-diff-changed { color:#ff9b66; }

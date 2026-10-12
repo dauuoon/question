@@ -142,6 +142,15 @@
 .category-group-title { margin: var(--space-3) 0 var(--space-2); padding: var(--space-2) var(--space-3); border-radius: 0.5rem; background: var(--color-background); color: var(--color-text-secondary); font-size: var(--font-size-caption); font-weight: var(--font-weight-semibold); }
 .category-option { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); width: 100%; border: 0; border-radius: 0.85rem; background: transparent; color: var(--color-text-primary); text-align: left; padding: var(--space-3) var(--space-4); font-weight: var(--font-weight-semibold); }
 .category-option:hover:not(:disabled), .category-option:focus-visible, .category-option[aria-selected="true"] { background: var(--color-primary-light); }
+.participant-shell[data-theme="dark"] .category-trigger.button-secondary { background: var(--color-surface); color: var(--color-text-primary); }
+.participant-shell[data-theme="dark"] .category-trigger.button-secondary[data-selected="true"] {
+  background: var(--color-primary-light); border-color: var(--color-primary); color: var(--color-text-primary);
+}
+.participant-shell[data-theme="dark"] .category-trigger.button-secondary:hover:not(:disabled) { background: var(--color-surface); opacity: .85; }
+.participant-shell[data-theme="dark"] .category-trigger.button-secondary[data-selected="true"]:hover:not(:disabled) {
+  background: var(--color-primary-light);
+}
+.participant-shell[data-theme="dark"] .category-placeholder { color: var(--color-text-secondary); }
 
 .image-actions {
   display: flex;

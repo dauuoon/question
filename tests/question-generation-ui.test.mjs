@@ -278,7 +278,7 @@ async function mountResult(t,result=view("completed"),fetchHandler,sessionStatus
   const observers=[];
   const originals={};
   for(const [name,value] of Object.entries({window:dom.window,document:dom.window.document,Element:dom.window.Element,
-    HTMLElement:dom.window.HTMLElement,HTMLAnchorElement:dom.window.HTMLAnchorElement,
+    HTMLElement:dom.window.HTMLElement,HTMLAnchorElement:dom.window.HTMLAnchorElement,navigator:dom.window.navigator,
     ResizeObserver:class {
       constructor(callback) { this.callback=callback;this.active=true;observers.push(this); }
       observe() {} disconnect() { this.active=false; }
@@ -454,7 +454,7 @@ test("loading view rotates the five messages in order, wraps, and cleans up time
     "좋고 나쁨을 판단하기보다, 왜 그렇게 디자인했는지 돌아봅니다.",
     "하나의 질문이 새로운 관점과 다음 선택으로 이어질 수 있어요.",
   ];
-  assert.equal(host.querySelector('[role="status"]').textContent,"질문을 생성 중입니다.");
+  assert.equal(host.querySelector(".question-generation-title").textContent,"질문을 생성 중입니다.");
   assert.equal(host.querySelector(".question-generation-message").textContent,messages[0]);
   assert.equal(host.querySelector("img").getAttribute("src"),"/images/icon.png");
   assert.equal(intervals[0].delay,4500);
@@ -941,6 +941,7 @@ for(const n of [1,3,5])test(`N=${n}: question actions and refinement have lightw
   assert.ok(regenerate);assert.ok(skip);
   assert.equal(regenerate.className,"question-text-action");assert.equal(skip.className,"question-text-action");
   assert.match(skip.textContent,/질문 건너뛰기/);
+  assert.equal(skip.getAttribute("aria-busy"),"false");
   assert.equal(skip.querySelector('[aria-hidden="true"]').textContent,"↪");
   assert.match(readFileSync("src/app/globals.css","utf8"),
     /\.question-text-action:disabled \{[^}]*color:var\(--color-text-secondary\)/);
@@ -963,6 +964,7 @@ test("skip persists skipped question/pin, advances to next unprocessed slot and 
     saved=actionableView();saved.questions[0].status="skipped";
     return actionResponse(input,saved);
   });
+
   await act(async()=>{ui.host.querySelector('[aria-label="현재 질문 건너뛰기"]').click();await settle();});
   assert.equal(ui.host.querySelector(".question-panel-count").textContent,"질문 2 / 3");
   assert.equal(ui.dom.window.document.activeElement,ui.host.querySelector(".question-panel-header"));
@@ -987,15 +989,43 @@ test("skip persists skipped question/pin, advances to next unprocessed slot and 
   assert.match(css,/\.participant-shell\[data-theme="dark"\] \.question-answer-textarea:disabled \{ background:rgb\(255 255 255 \/ 8%\); border-color:rgb\(255 255 255 \/ 20%\); color:#bdbdbd; box-shadow:none; outline:none; \}/);
 });
 
+test("skip shows a button-level busy state until its action result is received",async(t)=>{
+  let resolveAction;
+  const ui=await mountResult(t,actionableView(),async()=>new Promise(resolve=>{resolveAction=resolve;}));
+  await act(async()=>{
+    ui.host.querySelector('[aria-label="현재 질문 건너뛰기"]').click();
+    await settle();
+  });
+  const skip=ui.host.querySelector('[aria-label="현재 질문 건너뛰기"]');
+  assert.equal(skip.getAttribute("aria-busy"),"true");
+  assert.match(skip.textContent,/질문을 건너뛰는 중/);
+  assert.ok(skip.querySelector(".loading-state-spinner"));
+  assert.equal(typeof resolveAction,"function");
+  await act(async()=>{
+    resolveAction(json({errorCode:"QA-DB"}));
+    await settle();
+  });
+});
+
 test("question actions use neutral theme hover colors and refinement label has no space",async(t)=>{
   const ui=await mountResult(t,actionableView());
   assert.equal(ui.host.querySelector(".question-refine-button").textContent.trim(),"✦문장다듬기");
+  assert.ok(ui.host.querySelector(".question-refine-label"));
   const css=readFileSync("src/app/globals.css","utf8");
   assert.match(css,/\.question-refine-button \{[^}]*gap:0;/);
   assert.match(css,/\.question-text-action \{[^}]*color:#000/);
   assert.match(css,/\.question-text-action:hover:not\(:disabled\):not\(\[aria-disabled="true"\]\):not\(\.question-refine-button\) \{ background:#ededed; color:#000; \}/);
   assert.match(css,/\.participant-shell\[data-theme="dark"\] \.question-text-action:hover[^}]*background:rgb\(255 255 255 \/ 10%\); color:#fff/);
   assert.match(css,/\.question-text-action\[aria-disabled="true"\]:hover \{ background:transparent/);
+  assert.match(css,/question-refine-button\[aria-busy="true"\] \.question-refine-label/);
+});
+
+test("briefing and classification controls use the requested filled and dark-theme states",()=>{
+  const css=readFileSync("src/app/globals.css","utf8");
+  const appCss=readFileSync("src/app/app.css","utf8");
+  assert.match(css,/\.question-summary-tab svg \{[^}]*fill:currentColor/);
+  assert.match(css,/\.briefing-copy-button:hover:not\(:disabled\) \{[^}]*opacity:\.7/);
+  assert.match(appCss,/\.participant-shell\[data-theme="dark"\] \.category-trigger\.button-secondary\[data-selected="true"\]/);
 });
 
 function apiRegenerationView() {
@@ -1456,6 +1486,23 @@ test(`session completion accepts saved answers and skipped questions, deduplicat
   assert.equal(ui.host.querySelector(".briefing-text").textContent,"Synthetic design briefing");
   assert.match(ui.host.querySelector(".briefing-provenance").textContent,
     mode==="mock"?/TEST용 Mock 브리핑/:/AI 생성 브리핑/);
+  const copied=[];
+  let rejectClipboard=false;
+  Object.defineProperty(ui.dom.window.navigator,"clipboard",{configurable:true,value:{
+    async writeText(text) { if(rejectClipboard)throw new Error("clipboard denied"); copied.push(text); },
+  }});
+  await act(async()=>{
+    ui.host.querySelector('[aria-label="현재 브리핑 복사"]').click();
+    await settle();
+  });
+  assert.deepEqual(copied,["Synthetic design briefing"]);
+  assert.equal(ui.host.querySelector(".toast-box").textContent,"디자인 브리핑 전체를 복사했어요.");
+  rejectClipboard=true;
+  await act(async()=>{
+    ui.host.querySelector('[aria-label="현재 브리핑 복사"]').click();
+    await settle();
+  });
+  assert.match(ui.host.querySelector(".toast-box.toast-error").textContent,/클립보드에 복사하지 못했습니다/);
   assert.equal(ui.host.querySelector('[aria-label="질문 1 위치 보기"]').textContent,"1");
   await act(async()=>{
     ui.host.querySelector('[aria-label="질문 1 선택"]').click();
