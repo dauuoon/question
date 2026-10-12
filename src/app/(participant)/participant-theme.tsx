@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { ThemeFloatingActions } from "@/app/theme-floating-actions";
 
 export function ParticipantTheme({ initialTheme, children }: {
@@ -8,19 +8,6 @@ export function ParticipantTheme({ initialTheme, children }: {
 }) {
   const [theme, setTheme] = useState(initialTheme);
   const [message, setMessage] = useState("");
-  const [restricted, setRestricted] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    const query = window.matchMedia("(max-width: 400px)");
-    const update = () => setRestricted(query.matches);
-    update();
-    query.addEventListener("change", update);
-    window.addEventListener("resize", update);
-    return () => {
-      query.removeEventListener("change", update);
-      window.removeEventListener("resize", update);
-    };
-  }, []);
 
   function toggle() {
     const next = theme === "light" ? "dark" : "light";
@@ -31,11 +18,12 @@ export function ParticipantTheme({ initialTheme, children }: {
   }
 
   return (
-    <div className="app-shell participant-shell" data-theme={restricted !== false ? "light" : theme}>
-      {restricted === false ? <>
+    <div className="app-shell participant-shell" data-theme={theme}>
+      <div className="participant-app-content">
         {children}
         <ThemeFloatingActions theme={theme} message={message} onToggle={toggle} />
-      </> : <main className="participant-restriction" aria-label="이용 안내">
+      </div>
+      <main className="participant-restriction" aria-label="이용 안내">
         <svg className="participant-restriction-icon" viewBox="0 0 96 80" fill="none"
           stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"
           aria-hidden="true" focusable="false">
@@ -45,7 +33,7 @@ export function ParticipantTheme({ initialTheme, children }: {
           <path d="M77 26h7m-4 36h2" />
         </svg>
         <p>원활한 디자인 이미지 확인과 질문 작성을 위해 태블릿 또는 PC에서 접속해 주세요.</p>
-      </main>}
+      </main>
     </div>
   );
 }

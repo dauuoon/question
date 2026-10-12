@@ -208,80 +208,24 @@ test("responsive shell and gauge use tablet breakpoint, bottom centering and red
   assert.match(uploader, /파일을 선택하거나 여기로 끌어다 놓으세요\.<\/span>\s*<small className="upload-format">JPG · PNG \/ 최대 10MB<\/small>/);
 });
 
-test("participant viewport restriction gates participant UI at 400px and follows resize changes", () => {
-  let width = 400, state = [], cursor = 0, effect, resizeHandler;
-  const media = {
-    get matches() { return width <= 400; },
-    addEventListener: (_, handler) => { media.changeHandler = handler; },
-    removeEventListener: (_, handler) => { assert.equal(handler, media.changeHandler); },
-  };
-  const originalMatchMedia = globalThis.window?.matchMedia;
-  const originalAdd = globalThis.window?.addEventListener;
-  const originalRemove = globalThis.window?.removeEventListener;
-  const fakeWindow = globalThis.window ?? {};
-  fakeWindow.matchMedia = query => {
-    assert.equal(query, "(max-width: 400px)");
-    return media;
-  };
-  fakeWindow.addEventListener = (name, handler) => { assert.equal(name, "resize"); resizeHandler = handler; };
-  fakeWindow.removeEventListener = (name, handler) => {
-    assert.equal(name, "resize"); assert.equal(handler, resizeHandler);
-  };
-  globalThis.window = fakeWindow;
-  const hooks = {
-    useState(initial) {
-      const index = cursor++;
-      if (!(index in state)) state[index] = initial;
-      return [state[index], value => { state[index] = value; }];
-    },
-    useEffect(callback) { effect = callback; },
-  };
-  try {
-    function ThemeFloatingActions() {
-      return { type: "div", props: { className: "theme-floating", children: [
-        { type: "a", props: { className: "theme-toggle" } },
-        { type: "button", props: { className: "theme-toggle" } },
-      ] } };
-    }
-    const { ParticipantTheme } = load("../src/app/(participant)/participant-theme.tsx", {
-      react: hooks, "@/app/toast": { Toast: () => null },
-      "@/app/theme-floating-actions": { ThemeFloatingActions },
-    });
-    const render = () => { cursor = 0; return ParticipantTheme({ initialTheme: "dark", children: "participant UI" }); };
-    let tree = render();
-    assert.equal(tree.props["data-theme"], "light");
-    assert.equal(tree.props.children.type, "main");
-    assert.equal(tree.props.children.props.className, "participant-restriction");
-    assert.equal(nodes(tree).some(node => node === "participant UI"), false);
-    assert.equal(nodes(tree).some(node => node.props?.className === "theme-toggle"), false);
-
-    const cleanup = effect();
-    tree = render();
-    assert.equal(state[2], true);
-    assert.equal(tree.props["data-theme"], "light");
-    assert.equal(tree.props.children.props.children[1].props.children,
-      "원활한 디자인 이미지 확인과 질문 작성을 위해 태블릿 또는 PC에서 접속해 주세요.");
-
-    width = 401;
-    media.changeHandler();
-    tree = render();
-    assert.equal(state[2], false);
-    assert.equal(tree.props.children.props.children[0], "participant UI");
-    assert.equal(tree.props.children.props.children[1].type, ThemeFloatingActions);
-
-    width = 400;
-    resizeHandler();
-    tree = render();
-    assert.equal(state[2], true);
-    assert.equal(tree.props.children.type, "main");
-    cleanup();
-  } finally {
-    if (originalMatchMedia === undefined) delete fakeWindow.matchMedia;
-    else fakeWindow.matchMedia = originalMatchMedia;
-    if (originalAdd === undefined) delete fakeWindow.addEventListener;
-    else fakeWindow.addEventListener = originalAdd;
-    if (originalRemove === undefined) delete fakeWindow.removeEventListener;
-    else fakeWindow.removeEventListener = originalRemove;
-    globalThis.window = originalWindow;
+test("participant viewport guidance is controlled by CSS without a hydration flash", () => {
+  function ThemeFloatingActions() {
+    return { type: "div", props: { className: "theme-floating" } };
   }
+  const { ParticipantTheme } = load("../src/app/(participant)/participant-theme.tsx", {
+    react: { useState: initial => [initial, () => {}] },
+    "@/app/toast": { Toast: () => null },
+    "@/app/theme-floating-actions": { ThemeFloatingActions },
+  });
+  const tree = ParticipantTheme({ initialTheme: "dark", children: "participant UI" });
+  const content = nodes(tree).find(node => node.props?.className === "participant-app-content");
+  const restriction = nodes(tree).find(node => node.props?.className === "participant-restriction");
+  const css = readFileSync(new URL("../src/app/app.css", import.meta.url), "utf8");
+
+  assert.equal(tree.props["data-theme"], "dark");
+  assert.ok(content.props.children.includes("participant UI"));
+  assert.ok(content.props.children.some(node => node.type === ThemeFloatingActions));
+  assert.equal(restriction.props["aria-label"], "이용 안내");
+  assert.match(css, /\.participant-restriction \{\s*display: none;/u);
+  assert.match(css, /@media \(max-width: 400px\) \{\s*\.participant-app-content \{ display: none; \}\s*\.participant-restriction \{ display: flex; \}/u);
 });

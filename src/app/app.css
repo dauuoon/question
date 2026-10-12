@@ -216,7 +216,7 @@
 }
 
 .participant-restriction {
-  display: flex;
+  display: none;
   min-height: 100vh;
   min-height: 100dvh;
   padding: clamp(2rem, 8vw, 5rem);
@@ -227,6 +227,11 @@
   background: #f8f8f7;
   color: #222;
   text-align: center;
+}
+
+@media (max-width: 400px) {
+  .participant-app-content { display: none; }
+  .participant-restriction { display: flex; }
 }
 
 .participant-restriction-icon {
