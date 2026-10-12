@@ -174,7 +174,8 @@ export function SessionContextForm({ sessionId, initial, initialSavedAt, editabl
         {draftState.message && (draftState.status === "error" || draftState.status === "discarded") ?
           <Toast message={draftState.message} error /> : null}
         <div className="context-textarea">
-        <textarea id="additional-context" disabled={!editable} value={value.additional_context ?? ""}
+        <textarea id="additional-context" disabled={!editable || draftState.status === "loading"}
+          aria-busy={draftState.status === "loading"} value={value.additional_context ?? ""}
           aria-label="작업 맥락"
           aria-describedby="context-help context-count"
           onChange={(event) => {

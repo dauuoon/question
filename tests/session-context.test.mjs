@@ -635,3 +635,52 @@ test("form panels hide only presentation and keep persisted values and global sa
     assert.match(workPanel, /class="context-fields reflection-group"><legend>점검하고 싶은 부분[^<]*<\/legend><div class="context-fields reflection-choices">/);
   }
 });
+
+test("the additional-context textarea is disabled only while an AI draft is being applied", () => {
+  const initial = {
+    ...empty,
+    primary_category_id: "ux_ui",
+    subcategory_id: "web_design",
+    stage_id: "idea_concept",
+    additional_context: null,
+    context_ids: ["visual_form"],
+  };
+  function render(status) {
+    let stateIndex = 0;
+    const hooks = {
+      useState(value) {
+        const index = stateIndex++;
+        if (index === 3) value = { status, message: status === "loading" ? "AI가 작업 맥락을 정리하고 있어요..." : "" };
+        return [value, () => {}];
+      },
+      useEffect() {},
+      useRef(value) { return { current: value }; },
+    };
+    const { SessionContextForm } = load("../src/app/(participant)/sessions/[sessionId]/session-context-form.tsx", {
+      react: hooks,
+      "@/lib/constants/research-options": options,
+      "@/lib/session-context/input": input,
+      "@/lib/session-context/autosave": { ContextAutosave },
+      "@/lib/session-context/context-draft-controller": { ContextDraftController: class {} },
+      "@/lib/ai/context-draft-contract": draftContract,
+      "./context-actions": { saveSessionContext: async () => { throw new Error("Not invoked"); } },
+    });
+    const root = SessionContextForm({ sessionId, initial, editable: true, activeStep: 3 });
+    const found = [];
+    function visit(element) {
+      if (Array.isArray(element)) return element.forEach(visit);
+      if (!element || typeof element !== "object") return;
+      found.push(element);
+      visit(element.props?.children);
+    }
+    visit(root);
+    return found.find(element => element.type === "textarea" && element.props.id === "additional-context");
+  }
+
+  const idle = render("idle");
+  assert.equal(idle.props.disabled, false);
+  assert.equal(idle.props["aria-busy"], false);
+  const loading = render("loading");
+  assert.equal(loading.props.disabled, true);
+  assert.equal(loading.props["aria-busy"], true);
+});

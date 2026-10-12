@@ -103,18 +103,28 @@ test("login click and native Enter submission show pending state and suppress du
   await act(async () => { waits[1].resolve(); await waits[1].promise; });
 });
 
-test("login theme controls apply immediately and open the bundled manual in a new tab", async t => {
+test("login theme controls open the bundled manual in an accessible PDF modal", async t => {
   const { LoginTheme } = load("src/app/(auth)/login/login-theme.tsx");
   const { MANUAL_PDF_PATH } = load("src/lib/manual.ts");
   const ui = await withDom(t, React.createElement(LoginTheme, { initialTheme: "light" }, "login"));
   const toggle = ui.host.querySelector('button[aria-label="다크모드로 변경"]');
-  const manual = ui.host.querySelector('a[aria-label="사용자 매뉴얼 열기"]');
+  const manual = ui.host.querySelector('button[aria-label="사용자 매뉴얼 열기"]');
   assert.ok(manual);
-  assert.equal(manual.target, "_blank");
-  assert.equal(manual.rel, "noopener noreferrer");
-  assert.equal(decodeURIComponent(new URL(manual.href).pathname),
-    MANUAL_PDF_PATH);
-  assert.equal(manual.hasAttribute("download"), false);
+  assert.equal(manual.getAttribute("aria-haspopup"), "dialog");
+  await act(async () => { manual.click(); });
+  const dialog = ui.dom.window.document.querySelector('[role="dialog"][aria-modal="true"]');
+  assert.ok(dialog);
+  assert.equal(dialog.querySelector("h2").textContent, "WHY BOX 사용자 매뉴얼");
+  assert.equal(dialog.querySelector("iframe").getAttribute("src"), MANUAL_PDF_PATH);
+  assert.equal(dialog.querySelector("iframe").title, "WHY BOX 사용자 매뉴얼 PDF");
+  assert.ok(dialog.querySelector('a[target="_blank"][rel="noopener noreferrer"]'));
+  assert.equal(ui.dom.window.document.body.style.overflow, "hidden");
+  await act(async () => {
+    ui.dom.window.dispatchEvent(new ui.dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+  assert.equal(ui.dom.window.document.querySelector('[role="dialog"]'), null);
+  assert.equal(ui.dom.window.document.body.style.overflow, "");
+  assert.equal(ui.dom.window.document.activeElement, manual);
   const nextConfig = readFileSync("next.config.ts", "utf8");
   assert.match(nextConfig, /Content-Disposition", value: 'inline;/u);
   assert.equal(ui.host.querySelector(".auth-theme-shell").dataset.theme, "light");
