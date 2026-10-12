@@ -424,20 +424,20 @@
   line-height: 1;
 }
 
-.manual-viewer-frame {
+.manual-viewer-pages {
   flex: 1 1 auto;
   width: 100%;
   min-height: 0;
-  border: 0;
-  background: #fff;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--color-background);
 }
 
-.manual-viewer-fallback {
-  flex: 0 0 auto;
-  padding: var(--space-2) var(--space-4);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-caption);
-  text-align: right;
+.manual-viewer-page {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 0 auto;
 }
 
 @media (max-width: 640px) {

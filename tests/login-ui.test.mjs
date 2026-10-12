@@ -103,9 +103,9 @@ test("login click and native Enter submission show pending state and suppress du
   await act(async () => { waits[1].resolve(); await waits[1].promise; });
 });
 
-test("login theme controls open the bundled manual in an accessible PDF modal", async t => {
+test("login theme controls open the 13-page image manual in an accessible modal", async t => {
   const { LoginTheme } = load("src/app/(auth)/login/login-theme.tsx");
-  const { MANUAL_PDF_PATH } = load("src/lib/manual.ts");
+  const { MANUAL_PAGE_PATHS } = load("src/lib/manual.ts");
   const ui = await withDom(t, React.createElement(LoginTheme, { initialTheme: "light" }, "login"));
   const toggle = ui.host.querySelector('button[aria-label="다크모드로 변경"]');
   const manual = ui.host.querySelector('button[aria-label="사용자 매뉴얼 열기"]');
@@ -115,9 +115,11 @@ test("login theme controls open the bundled manual in an accessible PDF modal", 
   const dialog = ui.dom.window.document.querySelector('[role="dialog"][aria-modal="true"]');
   assert.ok(dialog);
   assert.equal(dialog.querySelector("h2").textContent, "WHY BOX 사용자 매뉴얼");
-  assert.equal(dialog.querySelector("iframe").getAttribute("src"), MANUAL_PDF_PATH);
-  assert.equal(dialog.querySelector("iframe").title, "WHY BOX 사용자 매뉴얼 PDF");
-  assert.ok(dialog.querySelector('a[target="_blank"][rel="noopener noreferrer"]'));
+  const pages = [...dialog.querySelectorAll(".manual-viewer-page")];
+  assert.equal(pages.length, 13);
+  assert.deepEqual(pages.map(page => page.getAttribute("src")), MANUAL_PAGE_PATHS);
+  assert.deepEqual(pages.map(page => page.alt), MANUAL_PAGE_PATHS.map((_, index) =>
+    `사용자 매뉴얼 ${index + 1}페이지`));
   assert.equal(ui.dom.window.document.body.style.overflow, "hidden");
   await act(async () => {
     ui.dom.window.dispatchEvent(new ui.dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -125,11 +127,7 @@ test("login theme controls open the bundled manual in an accessible PDF modal", 
   assert.equal(ui.dom.window.document.querySelector('[role="dialog"]'), null);
   assert.equal(ui.dom.window.document.body.style.overflow, "");
   assert.equal(ui.dom.window.document.activeElement, manual);
-  assert.equal(MANUAL_PDF_PATH, "/api/manual");
-  const manualRoute = readFileSync("src/app/api/manual/route.ts", "utf8");
-  assert.match(manualRoute, /"Content-Type": "application\/pdf"/u);
-  assert.match(manualRoute, /"Content-Disposition": 'inline;/u);
-  assert.match(readFileSync("next.config.ts", "utf8"), /outputFileTracingIncludes:[\s\S]*"\/api\/manual":[\s\S]*why-box-user-manual\.pdf/u);
+  assert.doesNotMatch(readFileSync("src/app/theme-floating-actions.tsx", "utf8"), /<iframe\b|<a[^>]*target="_blank"/u);
   assert.equal(ui.host.querySelector(".auth-theme-shell").dataset.theme, "light");
   await act(async () => { toggle.click(); });
   assert.equal(ui.host.querySelector(".auth-theme-shell").dataset.theme, "dark");

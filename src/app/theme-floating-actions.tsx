@@ -3,7 +3,7 @@
 import { createPortal } from "react-dom";
 import { useEffect, useRef, useState } from "react";
 import { Toast } from "./toast";
-import { MANUAL_PDF_PATH } from "@/lib/manual";
+import { MANUAL_PAGE_PATHS } from "@/lib/manual";
 
 export function ThemeFloatingActions({ theme, message, onToggle }: {
   theme: "light" | "dark";
@@ -15,7 +15,6 @@ export function ThemeFloatingActions({ theme, message, onToggle }: {
   const manualDialog = useRef<HTMLElement>(null);
   const manualCloseButton = useRef<HTMLButtonElement>(null);
   const label = theme === "light" ? "다크모드로 변경" : "라이트모드로 변경";
-  const manualUrl = MANUAL_PDF_PATH;
 
   useEffect(() => {
     if (!manualOpen) return;
@@ -84,10 +83,11 @@ export function ThemeFloatingActions({ theme, message, onToggle }: {
               <span aria-hidden="true">×</span>
             </button>
           </header>
-          <iframe className="manual-viewer-frame" src={manualUrl} title="WHY BOX 사용자 매뉴얼 PDF"
-            tabIndex={0} />
-          <a className="manual-viewer-fallback" href={manualUrl} target="_blank"
-            rel="noopener noreferrer">PDF가 보이지 않나요? 새 탭에서 열기</a>
+          <div className="manual-viewer-pages" aria-label="사용자 매뉴얼 페이지">
+            {MANUAL_PAGE_PATHS.map((src, index) => <img key={src} src={src}
+              className="manual-viewer-page" alt={`사용자 매뉴얼 ${index + 1}페이지`}
+              loading={index === 0 ? "eager" : "lazy"} />)}
+          </div>
         </section>
       </div>,
       document.body,
