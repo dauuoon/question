@@ -168,7 +168,7 @@ function nodes(element) {
 
 test("uploader confirms deletion, serializes requests, updates image revision and refreshes only on server success", async () => {
   const originalFetch = globalThis.fetch;
-  let cursor = 0, mounted = false, removed = false, deletedCalls = 0, resolveDelete;
+  let cursor = 0, mounted = false, removed = false, deletionEnabled = true, deletedCalls = 0, resolveDelete;
   const slots = [], revisions = [], counts = [];
   const hooks = {
     useState(initial) { const i = cursor++; if (!(i in slots)) slots[i] = initial;
@@ -183,7 +183,7 @@ test("uploader confirms deletion, serializes requests, updates image revision an
         removed = true; resolve(Response.json({ success: true, changed: true, activityRecorded: true }));
       }; });
     }
-    return Response.json({ deletionEnabled: true, images: removed ? [] : [
+    return Response.json({ deletionEnabled, images: removed ? [] : [
       { id: image, original_filename: "TEST.png", sort_order: 0, previewUrl: "https://preview.invalid/TEST" },
     ] });
   };
@@ -216,17 +216,32 @@ test("uploader confirms deletion, serializes requests, updates image revision an
     assert.equal(removeButton.props.disabled, false);
     removeButton.props.onClick();
     tree = render();
-    const confirmation = tree.find((node) => node.props?.action);
-    assert.match(confirmation.props.message, /복구할 수 없습니다/);
+    const confirmation = tree.find((node) => node.props?.role === "alertdialog");
+    assert.match(JSON.stringify(confirmation.props.children), /복구할 수 없습니다/);
     assert.equal(deletedCalls, 0);
-    confirmation.props.action.props.children[1].props.onClick();
-    confirmation.props.action.props.children[1].props.onClick();
+    const deleteConfirm = nodes(confirmation).find((node) => node.type === "button" &&
+      node.props.children === "삭제");
+    deleteConfirm.props.onClick();
+    deleteConfirm.props.onClick();
     assert.equal(deletedCalls, 1);
     assert.match(revisions.at(-1), /^deleting:/);
     assert.equal(render().filter((node) => node.type === "figure").length, 1);
     resolveDelete(); await settle();
     assert.equal(render().filter((node) => node.type === "figure").length, 0);
     assert.equal(counts.at(-1), 0);
+    removed = false;
+    deletionEnabled = false;
+    const refresh = render().find((node) => node.type === "button" && node.props.children === "이미지 목록 새로고침");
+    refresh.props.onClick();
+    await settle();
+    tree = render();
+    const unavailableDelete = tree.find((node) => node.props?.["aria-label"] === "TEST.png 삭제");
+    assert.equal(unavailableDelete.props.disabled, false);
+    unavailableDelete.props.onClick();
+    const unavailableDialog = render().find((node) => node.props?.role === "alertdialog");
+    assert.match(JSON.stringify(unavailableDialog.props.children), /이 환경에서 활성화되지 않았습니다/u);
+    assert.equal(nodes(unavailableDialog).find((node) => node.type === "button" &&
+      node.props.children === "삭제").props.disabled, true);
   } finally { globalThis.fetch = originalFetch; }
 });
 function requireCatalog() { return load("../src/lib/errors/catalog.ts", {}); }

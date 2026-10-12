@@ -164,7 +164,7 @@ export function SessionContextForm({ sessionId, initial, initialSavedAt, editabl
       </fieldset>
       </div>
       <div className="context-fields wizard-panel" hidden={activeStep !== 3}>
-        <p id="context-help" className="context-ai-help" role="status">
+        <p id="context-help" className={`context-ai-help${draftState.status === "loading" ? " is-loading" : ""}`} role="status">
           <img className="ai-icon-light" src="/images/ai.png" width="24" height="24" alt="" />
           <img className="ai-icon-dark" src="/images/ai-dark.png" width="24" height="24" alt="" />
           <span>{draftState.message && (draftState.status === "loading" || draftState.status === "success") ?

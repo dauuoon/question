@@ -1,6 +1,8 @@
 import { getErrorDefinition } from "@/lib/errors/catalog";
 import { signIn } from "./actions";
-import { Toast } from "@/app/toast";
+import { cookies } from "next/headers";
+import { LoginForm } from "./login-form";
+import { LoginTheme } from "./login-theme";
 
 type LoginPageProps = {
   searchParams: Promise<{ error?: string }>;
@@ -9,8 +11,10 @@ type LoginPageProps = {
 export default async function LoginPage({ searchParams }: LoginPageProps) {
   const { error } = await searchParams;
   const errorDefinition = error ? getErrorDefinition(error) : null;
+  const initialTheme = (await cookies()).get("why-box-theme")?.value === "dark" ? "dark" : "light";
 
   return (
+    <LoginTheme initialTheme={initialTheme}>
     <main className="auth-shell">
       <section className="auth-card" aria-labelledby="login-title">
         <header className="auth-heading">
@@ -19,31 +23,8 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           </h1>
           <p className="eyebrow">디자이너를 위한 AI 질문 생성 도구</p>
         </header>
-        <form action={signIn} className="form-stack">
-          <div className="auth-field">
-            <label htmlFor="identifier">아이디</label>
-            <input
-              id="identifier"
-              name="identifier"
-              autoComplete="username"
-              required
-            />
-          </div>
-          <div className="auth-field">
-            <label htmlFor="password">비밀번호</label>
-            <input
-              id="password"
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              required
-            />
-          </div>
-          {errorDefinition ? (
-            <Toast error message={`${errorDefinition.participantMessage} (${error})`} />
-          ) : null}
-          <button type="submit">로그인</button>
-        </form>
+        <LoginForm action={signIn} errorMessage={errorDefinition ?
+          `${errorDefinition.participantMessage} (${error})` : undefined} />
         <p className="auth-help">
           <a
             href="https://open.kakao.com/o/sv6VztYh"
@@ -55,5 +36,6 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
         </p>
       </section>
     </main>
+    </LoginTheme>
   );
 }

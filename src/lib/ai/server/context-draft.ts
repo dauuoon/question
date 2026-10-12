@@ -1,7 +1,7 @@
 import "server-only";
 import OpenAI from "openai";
 import type { Response, ResponseCreateParamsNonStreaming, ResponseInputContent } from "openai/resources/responses/responses";
-import { CONTEXT_DRAFT_PROMPT } from "../prompts/context-draft-v1.0";
+import { CONTEXT_DRAFT_PROMPT } from "../prompts/context-draft-v1.1";
 import { DESIGN_CATEGORIES, REFLECTION_CONTEXTS, WORK_STAGES } from "../../constants/research-options";
 import { DraftError, draftInputSchema } from "../context-draft-contract";
 import type { SessionContextInput } from "../../session-context/input";

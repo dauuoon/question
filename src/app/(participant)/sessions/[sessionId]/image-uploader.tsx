@@ -70,7 +70,11 @@ export function ImageUploader({ sessionId, editable, onImageCountChange, onImage
   }, [refresh]);
 
   async function deleteImage(image: SessionImage) {
-    if (!editable || !deletionEnabled || locked.current) return;
+    if (!editable || locked.current) return;
+    if (!deletionEnabled) {
+      setMessage("이미지 삭제 기능이 이 환경에서 활성화되지 않았습니다. 운영 설정을 확인해주세요.");
+      return;
+    }
     locked.current = true;
     onAvailabilityChange?.(false);
     setDeleting(image.id);
@@ -206,6 +210,9 @@ export function ImageUploader({ sessionId, editable, onImageCountChange, onImage
               onChange={(event) => void uploadFiles(prepareImageUploads(Array.from(event.target.files ?? [])))} />
             {busy ? <LoadingState>이미지를 저장하고 있어요.</LoadingState> :
               !ready && !message ? <LoadingState>저장된 이미지 목록을 확인하고 있어요.</LoadingState> : null}
+            {busy && images.length > 0 ? <p className="upload-hint" role="status">
+              업로드가 진행되는 동안 기존 이미지 삭제는 잠시 사용할 수 없습니다.
+            </p> : null}
           </>
         ) : <p className="upload-hint">이 세션의 이미지는 변경할 수 없습니다.</p>}
         <div className="upload-details">
@@ -217,12 +224,20 @@ export function ImageUploader({ sessionId, editable, onImageCountChange, onImage
         </div>
       </div>
       {message ? <Toast key={message} message={message} error={/\([A-Z]+-\d+\)/.test(message)} /> : null}
-      {deleteTarget ? <Toast message="이 이미지를 삭제하시겠어요? 삭제한 이미지는 복구할 수 없습니다." error={false}
-        action={<>
-          <button type="button" className="button-secondary" onClick={() => setDeleteTarget(null)}>취소</button>
-          <button type="button" disabled={!editable || busy || deleting !== null}
-            onClick={() => void deleteImage(deleteTarget)}>삭제</button>
-        </>} /> : null}
+      {deleteTarget ? <div className="session-dialog-backdrop">
+        <section className="session-dialog content-stack" role="alertdialog" aria-modal="true"
+          aria-labelledby="image-delete-title">
+          <h2 id="image-delete-title" className="card-title">이미지를 삭제할까요?</h2>
+          <p>{deletionEnabled ?
+            `${deleteTarget.original_filename}을(를) 삭제합니다. 삭제한 이미지는 복구할 수 없습니다.` :
+            "이미지 삭제 기능이 이 환경에서 활성화되지 않았습니다. 운영 설정을 확인해주세요."}</p>
+          <div className="session-dialog-actions">
+            <button type="button" className="button-secondary" onClick={() => setDeleteTarget(null)}>취소</button>
+            <button type="button" disabled={!editable || busy || deleting !== null || !deletionEnabled}
+              onClick={() => void deleteImage(deleteTarget)}>삭제</button>
+          </div>
+        </section>
+      </div> : null}
       <div className="image-actions">
         <p className="upload-count" aria-live="polite">이미지 {images.length} / {MAX_IMAGE_COUNT}</p>
         <button className="button-secondary" type="button" disabled hidden
@@ -241,9 +256,10 @@ export function ImageUploader({ sessionId, editable, onImageCountChange, onImage
             {image.previewUrl ? <img src={image.previewUrl} alt={`등록 이미지: ${image.original_filename}`} /> :
               <div className="image-deletion-placeholder">삭제 대기</div>}
             {editable ? <button type="button" className="image-delete button-secondary"
-              disabled={!deletionEnabled || busy || deleting !== null}
+              disabled={busy || deleting !== null}
               aria-label={`${image.original_filename} ${image.deletionPending ? "삭제 다시 시도" : "삭제"}`}
-              title={!deletionEnabled ? "삭제 기능은 migration 적용 후 활성화됩니다." : "이미지 삭제"}
+              title={busy ? "업로드 중에는 삭제할 수 없습니다. 업로드가 끝난 뒤 다시 시도해주세요." :
+                !deletionEnabled ? "이미지 삭제 기능이 이 환경에서 비활성화되어 있습니다." : "이미지 삭제"}
               onClick={() => image.deletionPending ? void deleteImage(image) : setDeleteTarget(image)}>
               <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
                 <path d="m6 6 12 12M18 6 6 18" />

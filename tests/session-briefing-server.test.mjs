@@ -149,7 +149,11 @@ test("mock briefing provider is restricted to the explicit TEST project and neve
   assert.match(result.response.briefing_text, /제 답변은 “I wanted the interface to feel calm\.”입니다/u);
   assert.doesNotMatch(result.response.briefing_text, /사용자는|참여자는/u);
   assert.doesNotMatch(result.response.briefing_text, /focused decisions/u);
-  assert.match(contract.SESSION_BRIEFING_PROMPT_VERSION, /v1\.2$/);
+  assert.match(contract.SESSION_BRIEFING_PROMPT_VERSION, /v1\.3$/);
+  const prompt = load("src/lib/ai/prompts/session-design-briefing-v1.3.ts").SESSION_DESIGN_BRIEFING_PROMPT;
+  assert.match(prompt, /currently underway only when an answer says it is underway/u);
+  assert.match(prompt, /Never convert a wish, possibility, or proposed next step/u);
+  assert.match(prompt, /first-person voice of the designer/u);
   assert.equal(SESSION_DESIGN_BRIEFING_SCHEMA.name, contract.SESSION_BRIEFING_SCHEMA_VERSION);
 });
 

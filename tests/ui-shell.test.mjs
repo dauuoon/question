@@ -237,8 +237,15 @@ test("participant viewport restriction gates participant UI at 400px and follows
     useEffect(callback) { effect = callback; },
   };
   try {
+    function ThemeFloatingActions() {
+      return { type: "div", props: { className: "theme-floating", children: [
+        { type: "a", props: { className: "theme-toggle" } },
+        { type: "button", props: { className: "theme-toggle" } },
+      ] } };
+    }
     const { ParticipantTheme } = load("../src/app/(participant)/participant-theme.tsx", {
       react: hooks, "@/app/toast": { Toast: () => null },
+      "@/app/theme-floating-actions": { ThemeFloatingActions },
     });
     const render = () => { cursor = 0; return ParticipantTheme({ initialTheme: "dark", children: "participant UI" }); };
     let tree = render();
@@ -260,7 +267,7 @@ test("participant viewport restriction gates participant UI at 400px and follows
     tree = render();
     assert.equal(state[2], false);
     assert.equal(tree.props.children.props.children[0], "participant UI");
-    assert.equal(nodes(tree).some(node => node.props?.className === "theme-toggle"), true);
+    assert.equal(tree.props.children.props.children[1].type, ThemeFloatingActions);
 
     width = 400;
     resizeHandler();

@@ -364,14 +364,16 @@ test("component immediate double click locks inputs/count/images with long-loadi
   const generate=ui.button("질문 생성하기");
   await act(async()=>{generate.click();generate.click();await settle();});
   assert.equal(ui.calls.filter(c=>c.url==="/api/question-generation").length,1);
-  assert.ok(ui.host.querySelector(".question-generation-loading"));
+  assert.ok(ui.host.querySelector(".loading-state-overlay"));
+  assert.equal(ui.host.querySelector(".session-wizard").hasAttribute("inert"),true);
   assert.equal(ui.host.querySelector("textarea").disabled,true);
   assert.equal(ui.host.querySelector('[data-testid="image-edit"]').disabled,true);
   assert.ok([...ui.host.querySelectorAll('input[name="question-count"]')].every(i=>i.closest("fieldset").disabled));
-  assert.match(ui.host.textContent,/질문을 생성 중입니다\./);
+  assert.match(ui.host.textContent,/질문을 생성하고 있어요···/);
+  assert.match(readFileSync("src/app/globals.css","utf8"),/background: rgb\(248 248 247 \/ 80%\)/);
   assert.doesNotMatch(ui.host.textContent,/\d+초|%/);
   await act(async()=>{pending.resolve();await settle();});
-  assert.match(ui.host.textContent,/질문을 생성 중입니다\./);
+  assert.match(ui.host.textContent,/질문을 생성하고 있어요···/);
 });
 
 test("component safe failure re-enables edits and staged recovery remains locked",async(t)=>{
@@ -409,23 +411,12 @@ test("result orders slots and renders answer controls without internal metadata"
   assert.match(readFileSync("src/app/globals.css","utf8"),/width:30px; height:30px/);
 });
 
-test("loading view rotates the five messages in order, wraps, and cleans up timers",async(t)=>{
+test("question generation loading is a centered full-screen overlay with supplied status copy",async(t)=>{
   const dom=new JSDOM("<!doctype html><div id='root'></div>");
   const originals={};
   for(const [name,value] of Object.entries({window:dom.window,document:dom.window.document,Element:dom.window.Element,
     IS_REACT_ACT_ENVIRONMENT:true})) {
     originals[name]=Object.getOwnPropertyDescriptor(globalThis,name);
-    Object.defineProperty(globalThis,name,{value,writable:true,configurable:true});
-  }
-  const intervals=[],timeouts=[],clearedIntervals=[],clearedTimeouts=[];
-  const timerDescriptors={};
-  for(const [name,value] of Object.entries({
-    setInterval:(callback,delay)=>{intervals.push({callback,delay});return intervals.length;},
-    clearInterval:id=>clearedIntervals.push(id),
-    setTimeout:(callback,delay)=>{timeouts.push({callback,delay});return timeouts.length;},
-    clearTimeout:id=>clearedTimeouts.push(id),
-  })) {
-    timerDescriptors[name]=Object.getOwnPropertyDescriptor(globalThis,name);
     Object.defineProperty(globalThis,name,{value,writable:true,configurable:true});
   }
   const {createRoot}=await import("react-dom/client");
@@ -438,38 +429,19 @@ test("loading view rotates the five messages in order, wraps, and cleans up time
     closed=true;
     await act(async()=>{root.unmount();await settle();});
     dom.window.close();
-    for(const [name,descriptor] of Object.entries(timerDescriptors)) {
-      if(descriptor)Object.defineProperty(globalThis,name,descriptor);else delete globalThis[name];
-    }
     for(const [name,descriptor] of Object.entries(originals)) {
       if(descriptor)Object.defineProperty(globalThis,name,descriptor);else delete globalThis[name];
     }
   };
   t.after(close);
-  await act(async()=>{root.render(React.createElement(QuestionGenerationLoading));await settle();});
-  const messages=[
-    "WHY BOX는 정답보다 생각을 이어갈 질문을 만듭니다.",
-    "질문에 답하다 보면 작업의 의도를 다시 발견할 수 있어요.",
-    "익숙하게 지나친 선택도 질문을 만나면 다시 보일 수 있어요.",
-    "좋고 나쁨을 판단하기보다, 왜 그렇게 디자인했는지 돌아봅니다.",
-    "하나의 질문이 새로운 관점과 다음 선택으로 이어질 수 있어요.",
-  ];
-  assert.equal(host.querySelector(".question-generation-title").textContent,"질문을 생성 중입니다.");
-  assert.equal(host.querySelector(".question-generation-message").textContent,messages[0]);
-  assert.equal(host.querySelector("img").getAttribute("src"),"/images/icon.png");
-  assert.equal(intervals[0].delay,4500);
-  for(let i=1;i<=messages.length;i++) {
-    await act(async()=>{intervals[0].callback();await settle();});
-    assert.equal(timeouts.at(-1).delay,250);
-    await act(async()=>{timeouts.at(-1).callback();await settle();});
-    assert.equal(host.querySelector(".question-generation-message").textContent,messages[i%messages.length]);
-  }
-  await act(async()=>{intervals[0].callback();await settle();});
-  const pendingTransition=timeouts.at(-1);
-  await close();
-  assert.ok(clearedIntervals.includes(1));
-  assert.ok(clearedTimeouts.includes(timeouts.indexOf(pendingTransition)+1));
-  assert.match(readFileSync("src/app/globals.css","utf8"),/@media \(prefers-reduced-motion: reduce\)/);
+  await act(async()=>{root.render(React.createElement(QuestionGenerationLoading,
+    {message:"질문을 생성하고 있어요···"}));await settle();});
+  assert.equal(host.querySelector(".loading-state-overlay").getAttribute("role"),"status");
+  assert.equal(host.querySelector(".loading-state-overlay").getAttribute("aria-busy"),"true");
+  assert.equal(host.querySelector(".loading-state-overlay .loading-state-spinner")!==null,true);
+  assert.equal(host.querySelector(".loading-state-overlay > span:nth-of-type(2)").textContent,"질문을 생성하고 있어요···");
+  assert.match(readFileSync("src/app/globals.css","utf8"),/z-index: 1200/);
+  assert.match(readFileSync("src/app/globals.css","utf8"),/background: rgb\(20 20 22 \/ 80%\)/);
 });
 
 test("saved result pins, question navigation, multi-image scope and whole-image targets stay linked",async(t)=>{
@@ -531,6 +503,62 @@ test("whole-image questions appear once on every image and selection activates t
   assert.equal(row().querySelector(".is-active"),null);
   assert.equal(ui.host.querySelectorAll(".question-image-pins > .question-pin").length,2);
   assert.equal(writes,0);
+});
+
+test("briefing view clears every question pin active state and question selection restores it",async(t)=>{
+  const ui=await mountResult(t,view("completed"),async url=>{
+    if(url.includes("/briefing"))return json(briefingBody());
+    throw new Error(`Unexpected request: ${url}`);
+  },"completed");
+  await act(async()=>{await settle();});
+  assert.equal(ui.host.querySelector(".question-summary-tab")!==null,true);
+  assert.equal(ui.host.querySelectorAll(".question-pin.is-active").length,0);
+  assert.equal(ui.host.querySelectorAll(".question-page-button.is-active").length,0);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 1 선택"]').click();await settle();});
+  assert.equal(ui.host.querySelectorAll(".question-pin.is-active").length,1);
+  await act(async()=>{ui.host.querySelector(".question-summary-tab").click();await settle();});
+  assert.equal(ui.host.querySelectorAll(".question-pin.is-active").length,0);
+  assert.equal(ui.host.querySelectorAll(".question-page-button.is-active").length,0);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 1 선택"]').click();await settle();});
+  assert.equal(ui.host.querySelectorAll(".question-pin.is-active").length,1);
+  assert.equal(ui.host.querySelector(".question-page-button.is-active").getAttribute("aria-label"),"질문 1 선택");
+  await ui.close();
+});
+
+test("session completion shows the briefing overlay only while the completion request is active",async t=>{
+  const pending=deferred();
+  const result=structuredClone(view("completed"));
+  result.questions[1].status="skipped";
+  result.questions[2].status="skipped";
+  const ui=await mountResult(t,result,async(url,options)=>{
+    if(url==="/api/question-answer")return json({success:true,updated_at:"2026-10-12T00:00:00.000Z"});
+    if(url.endsWith("/complete")) {
+      const request=JSON.parse(options.body);
+      await pending.promise;
+      return json({request_id:request.request_id,state:"completed",attempt_number:0,
+        retry_of_request_id:null,missing_question_ids:[],has_answer:true,replayed:false,provider_mode:"mock"});
+    }
+    if(url.endsWith("/briefing"))return json(briefingBody());
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  const answer=ui.host.querySelector("#question-answer-text");
+  await act(async()=>{
+    Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype,"value")
+      .set.call(answer,"TEST answer for completion");
+    answer.dispatchEvent(new ui.dom.window.Event("input",{bubbles:true}));
+    await settle();
+  });
+  await act(async()=>{ui.host.querySelector(".question-result-footer button").click();await settle();});
+  const dialog=ui.host.querySelector('[role="dialog"]');
+  assert.ok(dialog);
+  await act(async()=>{[...dialog.querySelectorAll("button")].find(button=>button.textContent==="세션 종료").click();await settle();});
+  assert.equal(ui.host.querySelector(".loading-state-overlay > span:nth-of-type(2)").textContent,"디자인 브리핑을 생성하고 있어요···");
+  assert.equal(ui.host.querySelector(".question-result").hasAttribute("inert"),true);
+  assert.equal(ui.host.querySelector(".loading-state-overlay").getAttribute("aria-busy"),"true");
+  await act(async()=>{pending.resolve();await settle();});
+  assert.equal(ui.host.querySelector(".loading-state-overlay"),null);
+  assert.equal(ui.host.querySelector(".question-result").hasAttribute("inert"),false);
+  await ui.close();
 });
 
 test("answers autosave before question navigation and remain isolated when returning",async(t)=>{
@@ -1512,7 +1540,7 @@ test(`session completion accepts saved answers and skipped questions, deduplicat
 });
 }
 
-test("ambiguous session completion hides recovery notice and retries only the same request when selected",async(t)=>{
+test("ambiguous session completion exposes recovery and retries only the same request when selected",async(t)=>{
   const input=view("completed");
   input.questions=input.questions.map((question,index)=>({
     ...question,
@@ -1523,8 +1551,14 @@ test("ambiguous session completion hides recovery notice and retries only the sa
   const ui=await mountResult(t,input,async(url,options={})=>{
     if(url.endsWith("/complete")) {
       requests.push(JSON.parse(options.body));
-      throw new Error("Synthetic ambiguous response");
+      if(requests.length===1)throw new Error("Synthetic ambiguous response");
+      const body=requests.at(-1);
+      return json({
+        request_id:body.request_id,state:"completed",attempt_number:1,
+        retry_of_request_id:null,missing_question_ids:[],has_answer:true,replayed:true,provider_mode:"mock",
+      });
     }
+    if(url.endsWith("/briefing"))return json(briefingBody());
     throw new Error(`Unexpected request: ${url}`);
   });
   await act(async()=>{
@@ -1536,20 +1570,51 @@ test("ambiguous session completion hides recovery notice and retries only the sa
   assert.ok(confirm);
   await act(async()=>{confirm.click();await settle();});
   assert.equal(requests.length,1);
-  assert.equal(ui.host.querySelector(".completion-status"),null);
-  assert.equal(ui.host.textContent.includes("같은 요청 결과 확인"),false);
-  const finish=ui.host.querySelector(".question-result-footer .wizard-actions > button");
-  assert.equal(finish.disabled,false);
-  await act(async()=>{finish.click();await settle();});
-  const retry=[...ui.host.querySelectorAll(".session-finish-dialog button")]
-    .find(button=>button.textContent.trim()==="세션 종료");
-  assert.ok(retry);
-  await act(async()=>{retry.click();await settle();});
+  assert.match(ui.host.querySelector(".completion-status").textContent,/같은 요청의 상태만 확인/u);
+  const check=[...ui.host.querySelectorAll(".completion-status button")]
+    .find(button=>button.textContent.trim()==="같은 요청 결과 확인");
+  assert.ok(check);
+  await act(async()=>{check.click();await settle();});
   assert.equal(requests.length,2);
   assert.equal(requests[1].request_id,requests[0].request_id);
-  const stored=JSON.parse(ui.dom.window.localStorage.getItem(`why-box:session-completion:${sessionId}`));
-  assert.equal(stored.request_id,requests[0].request_id);
-  assert.equal(stored.state,"unknown");
+  assert.equal(ui.host.querySelector(".briefing-text").textContent,"Synthetic design briefing");
+});
+
+test("completion enters the briefing view even when the saved briefing read fails, then allows read retry",async(t)=>{
+  const input=view("completed");
+  input.questions=input.questions.map((question,index)=>({
+    ...question,status:index===0?"unprocessed":"skipped",
+    answer:{...question.answer,original_answer:index===0?"Synthetic design answer":""},
+  }));
+  let reads=0;
+  const ui=await mountResult(t,input,async(url,options={})=>{
+    if(url.endsWith("/complete")) {
+      const body=JSON.parse(options.body);
+      return json({request_id:body.request_id,state:"completed",attempt_number:1,
+        retry_of_request_id:null,missing_question_ids:[],has_answer:true,replayed:false,provider_mode:"mock"});
+    }
+    if(url.endsWith("/briefing")) {
+      reads++;
+      return reads===1?json({errorCode:"COMPLETION-DB"},503):json(briefingBody());
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  await act(async()=>{
+    ui.host.querySelector(".question-result-footer .wizard-actions > button").click();
+    await settle();
+  });
+  const confirm=[...ui.host.querySelectorAll(".session-finish-dialog button")]
+    .find(button=>button.textContent.trim()==="세션 종료");
+  await act(async()=>{confirm.click();await settle();});
+  assert.equal(reads,1);
+  assert.ok(ui.host.querySelector(".briefing-panel"));
+  assert.match(ui.host.querySelector(".briefing-notice").textContent,/브리핑을 불러오지 못했습니다/u);
+  const retry=[...ui.host.querySelectorAll(".briefing-panel button")]
+    .find(button=>button.textContent.trim()==="다시 불러오기");
+  assert.ok(retry);
+  await act(async()=>{retry.click();await settle();});
+  assert.equal(reads,2);
+  assert.equal(ui.host.querySelector(".briefing-text").textContent,"Synthetic design briefing");
 });
 
 test("summary-ready sessions remain read-only without prematurely reading or exposing a briefing",async(t)=>{
@@ -1835,7 +1900,7 @@ test("context edits and saved snapshot survive a visible loading-to-failed trans
   });
   assert.equal(ui.saves.length,1);assert.equal(ui.button("질문 생성하기").disabled,false);
   await ui.click(ui.button("질문 생성하기"));
-  assert.ok(ui.host.querySelector(".question-generation-loading"));
+  assert.ok(ui.host.querySelector(".loading-state-overlay"));
   assert.equal(textarea.disabled,true);
   await act(async()=>{pending.resolve();await settle();});
   assert.equal(textarea.disabled,false);assert.equal(textarea.value,"TEST latest saved edit");

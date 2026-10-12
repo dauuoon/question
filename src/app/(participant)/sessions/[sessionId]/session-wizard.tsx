@@ -13,7 +13,6 @@ import { GenerationController, recoveryMessage, type GenerationUI } from "@/lib/
 import { questionCountSchema, type GenerationView } from "@/lib/question-generation/view-contract";
 import { QuestionResult } from "./question-result";
 import { questionSessionStatus } from "@/lib/session-completion/display-state";
-import { QuestionGenerationLoading } from "./question-generation-loading";
 import { sessionContextSchema } from "@/lib/session-context/input";
 import { LoadingState } from "@/app/loading-state";
 
@@ -118,7 +117,8 @@ export function SessionWizard({ sessionId, initial, initialSavedAt, initialGener
 
   return (
     <>
-    <section className="content-stack session-wizard" aria-label="성찰 준비" hidden={generation.view.state === "running"}>
+    <section className="content-stack session-wizard" aria-label="성찰 준비"
+      inert={generation.view.state === "running"}>
       <h1 id="wizard-step-title" ref={heading} tabIndex={-1} className="page-title">
         {step}단계 - {SESSION_STEPS[step - 1]}
       </h1>
@@ -191,7 +191,8 @@ export function SessionWizard({ sessionId, initial, initialSavedAt, initialGener
         </div>
       </div>
     </section>
-    {generation.view.state === "running" ? <QuestionGenerationLoading /> : null}
+    {generation.view.state === "running" ?
+      <LoadingState variant="overlay">질문을 생성하고 있어요···</LoadingState> : null}
     </>
   );
 }

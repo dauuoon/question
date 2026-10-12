@@ -159,7 +159,8 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   const [questionAction,setQuestionAction]=useState<"skip"|"regenerate"|null>(null);
   const [actionNotice,setActionNotice]=useState(initialNotice);
   const sessionFinished=sessionStatus!=="in_progress";
-  const [activeTab,setActiveTab]=useState<"summary"|"question">("question");
+  const [activeTab,setActiveTab]=useState<"summary"|"question">(()=>
+    canShowBriefing(sessionStatus)?"summary":"question");
   const [briefing,setBriefing]=useState<BriefingView|null>(null);
   const [briefingMessage,setBriefingMessage]=useState("");
   const [briefingLoading,setBriefingLoading]=useState(false);
@@ -169,12 +170,14 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   const [briefingDirtyNotice,setBriefingDirtyNotice]=useState("");
   const [copyNotice,setCopyNotice]=useState<{message:string;error:boolean}|null>(null);
   const [completionState,setCompletionState]=useState<CompletionUIState>("idle");
+  const [completionOverlay,setCompletionOverlay]=useState(false);
   const [completionMessage,setCompletionMessage]=useState("");
   const [completionMissing,setCompletionMissing]=useState<string[]>([]);
   const [exitDialog,setExitDialog]=useState(false);
   const [finishDialog,setFinishDialog]=useState(false);
   const [exitDestination,setExitDestination]=useState<string|null>(null);
   const completionBusyRef=useRef(false);
+  const completionBriefingLoadRef=useRef(false);
   const completionRequestRef=useRef<CompletionRequest|null>(null);
   const [actionRetry,setActionRetry]=useState(false);
   const actionBusyRef=useRef(false);
@@ -249,7 +252,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   },[result.session_id]);
 
   useEffect(()=>{
-    if(!canShowBriefing(sessionStatus))return;
+    if(!canShowBriefing(sessionStatus)||completionBriefingLoadRef.current)return;
     const controller=new AbortController();
     setBriefingLoading(true);
     void fetchBriefing(controller.signal).finally(()=>setBriefingLoading(false));
@@ -318,7 +321,9 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
     actionBusyRef.current=true;setQuestionAction(action);setActionNotice("");setActionRetry(false);
     try {
       if(!retry) {
-        const saved=await autosave.current?.flushAll();
+        let saved=false;
+        try { saved=await autosave.current?.flushAll()??false; }
+        catch { saved=false; }
         if(!saved) {setActionNotice("답변을 먼저 저장해주세요. 입력한 내용은 유지되어 있어요.");setQuestionAction(null);return;}
         const answer=autosave.current?.getAnswer(current.id);
         if(!answer)throw new Error("Answer snapshot missing");
@@ -425,6 +430,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   }
 
   async function fetchBriefing(signal?:AbortSignal) {
+    setActiveTab("summary");
     try {
       const response=await fetch(`/api/sessions/${result.session_id}/briefing`,{
         cache:"no-store",signal,
@@ -479,6 +485,8 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
         if(data.state==="completed") {
           saveCompletionRequest(request,"completed");
           setCompletionMessage("세션을 마무리했어요. 디자인 브리핑을 확인해주세요.");
+          completionBriefingLoadRef.current=true;
+          setActiveTab("summary");
           onSessionStatus("completed");
           try {window.localStorage.removeItem(completionStorageKey(result.session_id));} catch { /* Storage can be unavailable. */ }
           await fetchBriefing();
@@ -512,6 +520,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
       saveCompletionRequest(request,"unknown");
       setCompletionMessage("완료 요청 결과를 확인하지 못했습니다. 기존 답변은 보존되어 있으며 같은 요청의 상태만 확인할 수 있습니다.");
     } finally {
+      setCompletionOverlay(false);
       completionBusyRef.current=false;
       setNavigationBusy(false);
     }
@@ -520,11 +529,13 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   async function validateAndComplete(request?:CompletionRequest) {
     if(completionBusyRef.current||sessionStatus==="completed")return;
     completionBusyRef.current=true;
+    setCompletionOverlay(true);
     setNavigationBusy(true);
     setCompletionState("checking");
     setCompletionMessage("답변을 저장하고 확인하고 있어요.");
     const saved=await autosave.current?.flushAll();
     if(!saved) {
+      setCompletionOverlay(false);
       completionBusyRef.current=false;setNavigationBusy(false);
       setCompletionState("blocked");
       setCompletionMessage("답변 저장에 실패했습니다. 저장 상태를 확인하고 다시 시도해주세요.");
@@ -544,6 +555,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
         answer.refined_answer??"":answer?.original_answer??"").trim().length>0;
     });
     if(missing.length||!hasAnswer) {
+      setCompletionOverlay(false);
       completionBusyRef.current=false;setNavigationBusy(false);
       setCompletionState("blocked");setCompletionMissing(missing.map(question=>question.id));
       setCompletionMessage(missing.length?
@@ -561,6 +573,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
     const current= request??pending??{request_id:crypto.randomUUID(),retry_of_request_id:null};
     try {saveCompletionRequest(current,"loading");}
     catch {
+      setCompletionOverlay(false);
       completionBusyRef.current=false;setNavigationBusy(false);return;
     }
     await postCompletion(current);
@@ -750,7 +763,8 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
     setRefinementNotice(previous=>({...previous,[questionId]:{message:"",error:false,revision:0}}));
   }
 
-  return <section className="content-stack question-result" aria-labelledby="question-result-title">
+  return <>
+  <section className="content-stack question-result" aria-labelledby="question-result-title" inert={completionOverlay}>
     <header className="question-result-heading">
       <p className="eyebrow">Reflection · 성찰</p>
       <h1 className="page-title" id="question-result-title">생각을 돌아보는 질문</h1>
@@ -782,7 +796,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
                 </svg>:null}
               {wholeImageQuestions.length>0?<div className="question-whole-image-pins">
                 {wholeImageQuestions.map(question=><button type="button" key={question.id}
-                  className={`question-pin question-whole-image-pin${question.id===current?.id?" is-active":""}`}
+                  className={`question-pin question-whole-image-pin${activeTab==="question"&&question.id===current?.id?" is-active":""}`}
                   aria-label={`질문 ${question.slot_index} 전체 이미지 보기`}
                   aria-current={question.id===current?.id?"true":undefined}
                   aria-expanded={bubble?.questionId===question.id&&bubble.imageId===activeImageId}
@@ -791,7 +805,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
                   onClick={event=>void goToPin(question,activeImageId,event.currentTarget)}>{question.slot_index}</button>)}
               </div>:null}
               {pins.map(({question,target})=>{const display=pinLayout.find(pin=>pin.id===`${question.id}:${target.sort_order}`);return <button type="button" key={`${question.id}:${target.image_id}:${target.sort_order}`}
-                className={`question-pin${question.id===current?.id?" is-active":""}`}
+                className={`question-pin${activeTab==="question"&&question.id===current?.id?" is-active":""}`}
                 style={display?{left:display.left,top:display.top}:{
                   left:`${(target.x!+target.width!/2)*100}%`,
                   top:`${(target.y!+target.height!/2)*100}%`,
@@ -839,31 +853,26 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
                   </svg>
                 </button>:null}
                 {questions.map((question,index)=><button key={question.id} type="button"
-                  className={`question-page-button${index===questionIndex?" is-active":""}`}
-                  aria-label={`질문 ${index+1} 선택`} aria-current={index===questionIndex?"step":undefined}
+                  className={`question-page-button${activeTab==="question"&&index===questionIndex?" is-active":""}`}
+                  aria-label={`질문 ${index+1} 선택`} aria-current={activeTab==="question"&&index===questionIndex?"step":undefined}
                   disabled={navigationLocked||briefingEditing&&briefingDraft!==briefing?.current}
                   onClick={()=>void selectQuestion(index)}><span>{index+1}</span></button>)}
               </div>
             </nav>
           </div>
-          {canShowBriefing(sessionStatus)&&!briefing?<div className="briefing-notice" role={briefingMessage?"alert":"status"}>
-            {briefingMessage||"저장된 디자인 브리핑을 불러오고 있어요."}
-            {briefingMessage?<button type="button" className="button-secondary"
-              onClick={()=>void fetchBriefing()}>다시 불러오기</button>:null}
-          </div>:null}
-          {activeTab==="summary"&&canShowBriefing(sessionStatus)&&briefing?<section className="question-panel-content briefing-panel" aria-labelledby="briefing-title">
+          {activeTab==="summary"&&canShowBriefing(sessionStatus)?<section className="question-panel-content briefing-panel" aria-labelledby="briefing-title">
             <div className="briefing-heading">
               <h2 id="briefing-title" className="question-panel-text">디자인 브리핑</h2>
-              <button type="button" className="briefing-copy-button" aria-label="현재 브리핑 복사"
+              {briefing?<button type="button" className="briefing-copy-button" aria-label="현재 브리핑 복사"
                 title="현재 브리핑 복사" disabled={!briefing||briefingLoading||briefingEditing}
                 onClick={()=>void copyBriefing()}>
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <rect x="8" y="8" width="12" height="13" rx="2" />
                   <path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h2" />
                 </svg>
-              </button>
+              </button>:null}
             </div>
-            {!briefing&&briefingLoading?<LoadingState>저장된 디자인 브리핑을 불러오고 있어요.</LoadingState>:null}
+            {!briefing&&!briefingMessage?<LoadingState>저장된 디자인 브리핑을 불러오고 있어요.</LoadingState>:null}
             {!briefing&&briefingMessage?<div role="alert" className="briefing-notice">
               <p>{briefingMessage}</p>
               <button type="button" className="button-secondary" onClick={()=>void fetchBriefing()}>다시 불러오기</button>
@@ -1003,9 +1012,9 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
       <section className="completion-controls" aria-label="세션 종료 상태">
       {sessionStatus==="summary_ready"&&!completionMessage?
         <p className="question-result-readonly">세션 완료를 준비 중입니다. 질문과 답변은 보존되어 있으며 완료 요청의 결과를 확인해주세요.</p>:null}
-      {completionMessage&&completionState!=="unknown"&&completionState!=="pending"?
+      {completionMessage?
         <div className={`completion-status${completionState==="failed"?" is-error":""}`}
-          role={completionState==="failed"?"alert":"status"} aria-live="polite">
+          role={completionState==="failed"||completionState==="unknown"?"alert":"status"} aria-live="polite">
         {completionState==="checking"||completionState==="loading"?
           <LoadingState>{completionMessage}</LoadingState>:<p>{completionMessage}</p>}
         {completionMissing.length>0?<ul className="completion-missing-questions">
@@ -1021,6 +1030,12 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
           disabled={completionBusyRef.current} onClick={()=>void retryCompletion()}>
           명시적으로 한 번 다시 시도
         </button>:null}
+        {(completionState==="unknown"||completionState==="pending")&&completionRequestRef.current?
+          <button type="button" className="button-secondary"
+            disabled={completionBusyRef.current}
+            onClick={()=>void validateAndComplete(completionRequestRef.current??undefined)}>
+            같은 요청 결과 확인
+          </button>:null}
         </div>:null}
       </section>}
     <div className="wizard-footer question-result-footer">
@@ -1062,5 +1077,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
         </div>
       </section>
     </div>:null}
-  </section>;
+  </section>
+  {completionOverlay?<LoadingState variant="overlay">디자인 브리핑을 생성하고 있어요···</LoadingState>:null}
+  </>;
 }
