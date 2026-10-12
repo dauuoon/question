@@ -18,6 +18,7 @@ function load(path) {
   const module = { exports: {} };
   runInThisContext(`(function(require,module,exports){${compiled}\n})`)(
     name => name === "@/app/toast" ? { Toast: () => null } :
+      name === "@/lib/manual" ? load("src/lib/manual.ts") :
       name.startsWith("@/") ? load(`src/${name.slice(2)}.tsx`) :
         name.startsWith(".") ? load(new URL(`${name}.tsx`, url).pathname.replace(
           new URL("../", import.meta.url).pathname, "")) : require(name), module, module.exports);
@@ -104,17 +105,18 @@ test("login click and native Enter submission show pending state and suppress du
 
 test("login theme controls apply immediately and open the bundled manual in a new tab", async t => {
   const { LoginTheme } = load("src/app/(auth)/login/login-theme.tsx");
+  const { MANUAL_PDF_PATH } = load("src/lib/manual.ts");
   const ui = await withDom(t, React.createElement(LoginTheme, { initialTheme: "light" }, "login"));
   const toggle = ui.host.querySelector('button[aria-label="다크모드로 변경"]');
   const manual = ui.host.querySelector('a[aria-label="사용자 매뉴얼 열기"]');
   assert.ok(manual);
   assert.equal(manual.target, "_blank");
   assert.equal(manual.rel, "noopener noreferrer");
-  assert.equal(new URL(manual.href).pathname, "/api/manual");
+  assert.equal(decodeURIComponent(new URL(manual.href).pathname),
+    MANUAL_PDF_PATH);
   assert.equal(manual.hasAttribute("download"), false);
-  const manualRoute = readFileSync("src/app/api/manual/route.ts", "utf8");
-  assert.match(manualRoute, /Content-Disposition": 'inline;/u);
-  assert.match(manualRoute, /Content-Type": "application\/pdf"/u);
+  const nextConfig = readFileSync("next.config.ts", "utf8");
+  assert.match(nextConfig, /Content-Disposition", value: 'inline;/u);
   assert.equal(ui.host.querySelector(".auth-theme-shell").dataset.theme, "light");
   await act(async () => { toggle.click(); });
   assert.equal(ui.host.querySelector(".auth-theme-shell").dataset.theme, "dark");

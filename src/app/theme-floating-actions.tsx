@@ -1,6 +1,7 @@
 "use client";
 
 import { Toast } from "./toast";
+import { MANUAL_PDF_PATH } from "@/lib/manual";
 
 export function ThemeFloatingActions({ theme, message, onToggle }: {
   theme: "light" | "dark";
@@ -8,9 +9,10 @@ export function ThemeFloatingActions({ theme, message, onToggle }: {
   onToggle: () => void;
 }) {
   const label = theme === "light" ? "다크모드로 변경" : "라이트모드로 변경";
+  const manualUrl = encodeURI(MANUAL_PDF_PATH);
   return <div className="theme-floating">
     {message ? <Toast message={message} error /> : null}
-    <a className="theme-toggle" href="/api/manual" target="_blank" rel="noopener noreferrer"
+    <a className="theme-toggle" href={manualUrl} target="_blank" rel="noopener noreferrer"
       aria-label="사용자 매뉴얼 열기" title="사용자 매뉴얼 열기">
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
         strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
