@@ -125,8 +125,11 @@ test("login theme controls open the bundled manual in an accessible PDF modal", 
   assert.equal(ui.dom.window.document.querySelector('[role="dialog"]'), null);
   assert.equal(ui.dom.window.document.body.style.overflow, "");
   assert.equal(ui.dom.window.document.activeElement, manual);
-  const nextConfig = readFileSync("next.config.ts", "utf8");
-  assert.match(nextConfig, /Content-Disposition", value: 'inline;/u);
+  assert.equal(MANUAL_PDF_PATH, "/api/manual");
+  const manualRoute = readFileSync("src/app/api/manual/route.ts", "utf8");
+  assert.match(manualRoute, /"Content-Type": "application\/pdf"/u);
+  assert.match(manualRoute, /"Content-Disposition": 'inline;/u);
+  assert.match(readFileSync("next.config.ts", "utf8"), /outputFileTracingIncludes:[\s\S]*"\/api\/manual":[\s\S]*why-box-user-manual\.pdf/u);
   assert.equal(ui.host.querySelector(".auth-theme-shell").dataset.theme, "light");
   await act(async () => { toggle.click(); });
   assert.equal(ui.host.querySelector(".auth-theme-shell").dataset.theme, "dark");

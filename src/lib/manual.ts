@@ -1,1 +1,1 @@
-export const MANUAL_PDF_PATH = "/why-box-user-manual.pdf";
+export const MANUAL_PDF_PATH = "/api/manual";
