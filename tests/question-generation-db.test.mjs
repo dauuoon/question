@@ -269,11 +269,9 @@ test("answer schema preserves authored/refined text and persists undo under part
   } finally {await f.db.close();}
 });
 
-test("Frozen artifacts retain exact approved SHA-256; CTA uses eligibility with server-only route", () => {
+test("Frozen schema retains approved SHA-256; CTA uses eligibility with server-only route", () => {
   for (const [path, hash] of [
-    ["src/lib/ai/prompts/question-generation-v2.5.ts", "9dcb960bcf7ee04a9878829a1ea86492cbc0d40723f3d82bc33de33091081cae"],
     ["src/lib/ai/schemas/question-generation-v2.0.ts", "0fe9c5ce02cbe5cdc03415b7b8d68c58ca049d40a6a4d6d192ebd454b3833d49"],
-    ["src/lib/ai/prompts/context-draft-v1.0.ts", "fcc2f23abc35becaf02a520cd2768cbb35c0ed6809a9af143dd8e3451a82d8be"],
   ]) assert.equal(createHash("sha256").update(read(path)).digest("hex"), hash);
   assert.match(read("src/app/(participant)/sessions/[sessionId]/session-wizard.tsx"),
     /disabled=\{!eligible\} onClick=\{\(\) => void controller\.current\?\.start\(\)\}>질문 생성하기<\/button>/);

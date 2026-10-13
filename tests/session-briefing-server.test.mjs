@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { relative } from "node:path";
 import { setImmediate } from "node:timers";
@@ -149,12 +150,31 @@ test("mock briefing provider is restricted to the explicit TEST project and neve
   assert.match(result.response.briefing_text, /제 답변은 “I wanted the interface to feel calm\.”입니다/u);
   assert.doesNotMatch(result.response.briefing_text, /사용자는|참여자는/u);
   assert.doesNotMatch(result.response.briefing_text, /focused decisions/u);
-  assert.match(contract.SESSION_BRIEFING_PROMPT_VERSION, /v1\.3$/);
-  const prompt = load("src/lib/ai/prompts/session-design-briefing-v1.3.ts").SESSION_DESIGN_BRIEFING_PROMPT;
-  assert.match(prompt, /currently underway only when an answer says it is underway/u);
+  assert.match(contract.SESSION_BRIEFING_PROMPT_VERSION, /v1\.4$/);
+  const prompt = load("src/lib/ai/prompts/session-design-briefing-v1.4.ts").SESSION_DESIGN_BRIEFING_PROMPT;
+  assert.match(prompt, /currently underway only when the confirmed context or a final answer says it is underway/u);
   assert.match(prompt, /Never convert a wish, possibility, or proposed next step/u);
   assert.match(prompt, /first-person voice of the designer/u);
   assert.equal(SESSION_DESIGN_BRIEFING_SCHEMA.name, contract.SESSION_BRIEFING_SCHEMA_VERSION);
+});
+
+test("briefing prose revision preserves grounding and work-state rules while adding client-facing style", () => {
+  const prompt = load("src/lib/ai/prompts/session-design-briefing-v1.4.ts").SESSION_DESIGN_BRIEFING_PROMPT;
+  assert.equal(createHash("sha256").update(prompt).digest("hex"),
+    "93f44c45b40e457e02332518836357fcfafec695b3ce33d0f98e07acb7116329");
+  for (const rule of [
+    /Address the client in the designer's own voice/u,
+    /professional Korean prose with "~습니다" endings/u,
+    /Distinguish design intentions, reasons for judgments, and matters for review/u,
+    /"하고 싶어요", "해보고 싶습니다", or "고려하고 싶습니다"/u,
+    /do not copy it verbatim or strengthen a wish into a commitment/u,
+    /"검토하고 있습니다" only for explicitly ongoing review/u,
+    /"검토할 예정입니다" only for an explicitly confirmed plan/u,
+    /"검토했습니다" only for explicitly completed review/u,
+    /"관심을 두고 있는 부분입니다" or "검토 대상입니다"/u,
+    /without claiming that work is underway or scheduled/u,
+    /Never add a design decision, performed result, or improvement effect/u,
+  ]) assert.match(prompt, rule);
 });
 
 test("briefing HTTP helpers reject cross-origin requests and oversized or invalid JSON bodies", async () => {
@@ -238,6 +258,8 @@ test("completion POST rejects cross-origin requests before auth or repository wo
     assert.match(params.instructions, /not instructions|Do not invent intentions|uncertainty|unsupported causal links/);
     assert.match(params.instructions,/first-person voice of the designer/i);
     assert.match(params.instructions,/Do not refer to the designer as "the participant" or "the user"/);
+    assert.equal(params.instructions,
+      load("src/lib/ai/prompts/session-design-briefing-v1.4.ts").SESSION_DESIGN_BRIEFING_PROMPT);
     assert.equal(params.store, false);
     assert.equal(params.stream, false);
     assert.equal(params.text.format.strict, true);
@@ -277,6 +299,8 @@ test("completion POST rejects cross-origin requests before auth or repository wo
     assert.equal(options.timeout, 45000);
     assert.equal(options.logLevel, "off");
     assert.equal(sent.model, "mock-model");
+    assert.equal(sent.instructions, providerModule.sessionBriefingProvenance.prompt);
+    assert.equal(providerModule.sessionBriefingProvenance.prompt_version, "session-design-briefing-v1.4");
     assert.ok(requestOptions.signal instanceof globalThis.AbortSignal);
     const mock = providerModule.createSessionBriefingProvider({ ...env, NODE_ENV: "development" });
     assert.equal(mock.mode, "mock");

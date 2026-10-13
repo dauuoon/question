@@ -113,9 +113,7 @@ test("request rejects client overrides; config uses only separate server model; 
     OPENAI_API_KEY: "mock-only", OPENAI_QUESTION_GENERATION_MODEL: "gpt-6-astra",
   }).model, "gpt-6-astra");
   for (const [path, hash] of [
-    ["prompts/question-generation-v2.5.ts", "9dcb960bcf7ee04a9878829a1ea86492cbc0d40723f3d82bc33de33091081cae"],
     ["schemas/question-generation-v2.0.ts", "0fe9c5ce02cbe5cdc03415b7b8d68c58ca049d40a6a4d6d192ebd454b3833d49"],
-    ["prompts/context-draft-v1.0.ts", "fcc2f23abc35becaf02a520cd2768cbb35c0ed6809a9af143dd8e3451a82d8be"],
   ]) assert.equal(createHash("sha256").update(read(`src/lib/ai/${path}`)).digest("hex"), hash);
 });
 
@@ -150,7 +148,31 @@ test("strict validation rejects shape/ranks/enums/hierarchy/guides/targets and t
   assert.deepEqual(validation.normalizeRelatedContexts(["시각적·형태적 표현을 살펴보고 싶어요"], saved.context_ids), ["visual_form"]);
 });
 
-test("Responses request preserves frozen schema/prompt, saved labels/context, sorted images, five candidates for every N", async () => {
+test("question terminology revision only adds expression rules and self-checks to the preserved framework", () => {
+  assert.equal(prompt.QUESTION_GENERATION_PROMPT_VERSION, "question-generation-v2.5");
+  const restored = read("src/lib/ai/prompts/question-generation-v2.5.ts")
+    .replace(/# DESIGN TERMINOLOGY AND EXPRESSION RULES[\s\S]*?(?=# ANSWER GUIDE RULES)/u, "")
+    .replace(/디자인 전문 용어와 문장 표현에 대해 추가로 확인한다\.[\s\S]*?(?=전체 질문 세트에 대해 확인한다\.)/u, "");
+  assert.equal(createHash("sha256").update(restored).digest("hex"),
+    "9dcb960bcf7ee04a9878829a1ea86492cbc0d40723f3d82bc33de33091081cae");
+  for (const rule of [
+    /전문 용어 사용보다 질문의 명료성과 자연스러움을 우선/u,
+    /이미지, 작업 맥락, 디자인 분야 및 현재 작업 단계와 직접 관련/u,
+    /무드보드\(Moodboard\), 타이포그래피\(Typography\), 레이아웃\(Layout\)/u,
+    /최초 등장은 후보 질문 5개 전체를 기준/u,
+    /모든 전문 용어나 질문에 영문을 기계적으로 병기하지 않는다/u,
+    /심미성, 시각적 완성도, 시각적 주목도, 일관성, 가독성/u,
+    /가독성, 시인성, 심미성.*동일한 의미로 취급하지 않는다/u,
+    /"볼더리한".*"볼드한", "굵은 서체"/u,
+    /하나의 질문에 지나치게 많은 전문 용어를 포함하지 않는다/u,
+    /특정 디자인 선택이 정답인 것처럼 유도/u,
+    /디자인 전문 용어가 정확하게 사용되었는가/u,
+    /영문 병기가 불필요하게 반복/u,
+    /질문의 의미를 바꾸지 않고 더 짧게/u,
+  ]) assert.match(prompt.QUESTION_GENERATION_PROMPT, rule);
+});
+
+test("Responses request uses revised prompt with unchanged schema, saved context, image order and five candidates for every N", async () => {
   for (const n of [1, 3, 5]) {
     const params = provider.questionGenerationParameters("configured-model", snapshot(n), ["signed-1", "signed-2"]);
     assert.equal(params.instructions, prompt.QUESTION_GENERATION_PROMPT);
@@ -180,6 +202,7 @@ test("Responses request preserves frozen schema/prompt, saved labels/context, so
   const result = await fake.generateQuestions({ apiKey: "mock-only", model: "configured-model" }, snapshot(), ["a", "b"], signal);
   assert.equal(result.model, "actual-model");
   assert.equal(sdkCalls.length, 1); assert.equal(sdkCalls[0].settings.maxRetries, 0);
+  assert.equal(sdkCalls[0].params.instructions, prompt.QUESTION_GENERATION_PROMPT);
   assert.equal(sdkCalls[0].settings.logLevel, "off"); assert.equal(sdkCalls[0].settings.timeout, 60000);
   assert.equal(sdkCalls[0].options.signal, signal);
 });
@@ -380,6 +403,8 @@ for (const n of [1, 3, 5]) test(`actual RPC-backed server pipeline N=${n}: five 
     const deps = dependencies({ generate: async () => { providerCalls++; return generated(); } });
     const first = await run(s.repo, input, deps);
     assert.equal(first.question_ids.length, n);
+    assert.equal(s.calls.find(call => call.name === "stage_question_generation_candidates").args.p_prompt_version,
+      prompt.QUESTION_GENERATION_PROMPT_VERSION);
     const counts = (await s.db.query(`select
       (select count(*)::int from public.question_candidates) candidates,
       (select count(*)::int from public.questions) questions,

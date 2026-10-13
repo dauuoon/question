@@ -358,11 +358,13 @@ Vercel project, not the existing old `whybox` project.
   sends only `participant_confirmed_context` and `final_answers`.
 - Session/participant/question UUIDs, question text, superseded answer versions,
   skipped questions, images and prior AI drafts are not sent to OpenAI.
-- The separate [briefing prompt v1.2](./src/lib/ai/prompts/session-design-briefing-v1.2.ts)
+- The separate [briefing prompt v1.4](./src/lib/ai/prompts/session-design-briefing-v1.4.ts)
   asks for natural first-person Korean prose from the designer's perspective,
   prohibits third-person participant summaries and invented intentions,
-  judgments, facts or causal links, and preserves uncertainty/negation. Existing
-  question-generation prompts/schemas are unchanged. Briefing output still uses
+  judgments, facts or causal links, and preserves uncertainty/negation. It uses
+  professional client-facing `~습니다` prose and distinguishes intentions,
+  judgment grounds and review targets without upgrading wishes into confirmed
+  plans, ongoing work or completed results. Briefing output still uses
   the strict v1.0 JSON schema; the prompt version is stored with each new source.
 - Calls use `store:false`, no tools, no streaming, 4000 output tokens, a 45-second
   deadline and SDK retries disabled. Only a complete, non-refusal, single-message
@@ -1012,8 +1014,40 @@ IDs using research constants, checks every private object through authenticated 
 listing, and signs all images in snapshot order for 180 seconds. Service role is used
 only for stage/commit/safe failure RPCs, never Storage or direct table writes.
 Only `acquired: true` can invoke OpenAI Responses; `store: false`, `maxRetries: 0`,
-SDK logging off, and the unmodified frozen prompt/strict JSON Schema are used.
+SDK logging off, and the active prompt/unchanged strict JSON Schema are used.
 The returned model ID and provider creation time are persisted as generation metadata.
+
+### Active AI prompt revisions (2026-10-13, local only)
+
+- [Question generation v2.5](./src/lib/ai/prompts/question-generation-v2.5.ts)
+  retains its DB-compatible version with the approved 2026-10-13 wording revision,
+  adding context-relevant design terminology
+  rules and terminology self-checks. English is optional for clarification on
+  the first occurrence across the five candidates, not repeated per question.
+  Framework, question types, ranking, five-candidate count, answer guides,
+  targets, JSON schema and validation are unchanged. The DB constraints and RPC
+  allow only v2.5, so generation metadata still records v2.5; the code revision
+  distinguishes this wording update. Tests strip only the added rules and
+  self-checks, then verify the original prompt's SHA-256. Existing attempts and
+  stored questions are not rewritten.
+- [Context draft v1.2](./src/lib/ai/prompts/context-draft-v1.2.ts) builds on v1.1,
+  replacing the rule that implied a selected review target was already being
+  reviewed. New drafts describe supported purpose/state/review targets, omit
+  unnecessary first-person openings and wish-based phrasing, and do not infer
+  ongoing/completed review or a committed plan from selected interests.
+  User-edited text and stored context remain untouched.
+- [Design briefing v1.4](./src/lib/ai/prompts/session-design-briefing-v1.4.ts)
+  builds on v1.3, adding client-facing professional style and faithful
+  reformulation of wishes. Work state must be explicitly supported by confirmed
+  context or a final selected answer. New briefing provenance records v1.4;
+  the v1.0 response schema and existing saved briefings remain unchanged.
+- The request builders and mocked SDK tests verify the active revisions.
+  Only active prompt versions are retained in the prompt directory; context and
+  briefing prompts are standalone files with no dependency on older versions.
+  Their resolved text is unchanged by this cleanup and verified by SHA-256 tests.
+  The separate one-question
+  regeneration and sentence-refinement prompts are unchanged. No live model
+  calls, remote data changes, migrations, push or deployment are required.
 
 Validation rejects incomplete/refused/non-JSON output, anything except five candidates
 in rank 1..5 order, invalid framework hierarchy, duplicate/empty questions, invalid
@@ -1113,7 +1147,7 @@ for 180 seconds. One failed image preparation fails the whole request. No client
 Storage path, label, model or prompt is accepted.
 
 The server-only OpenAI SDK is pinned to `7.28.0`. Its non-streaming Responses request
-passes the unchanged FINAL/FROZEN `context-draft-v1.0` as instructions, selected labels
+passes the active `context-draft-v1.2` as instructions, selected labels
 and the ordered images, with `store: false`, SDK logging disabled and zero SDK retries.
 The complete route has a 60-second deadline. Refusals, interruptions, empty output,
 Unicode output longer than 1,000 characters, rate limits and API/configuration errors
@@ -1293,7 +1327,7 @@ refinement remains disabled unless separately configured and approved.
 ### Phase 3-D-3: sentence refinement integration and mock validation
 
 The existing server-only Responses API provider uses the versioned
-`sentence-refinement-v1.1` prompt; `sentence-refinement-v1.0` is retained unchanged.
+`sentence-refinement-v1.1` prompt; obsolete prompt files have been removed.
 The prompt edits expression (spelling, grammar, repetition and flow) and may
 naturally professionalize colloquial or overly hesitant wording for describing
 design work. It preserves meaning, uncertainty, emotion, first-person viewpoint

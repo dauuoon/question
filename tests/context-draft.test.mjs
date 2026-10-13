@@ -32,7 +32,7 @@ const { ContextDraftController, requestContextDraft } = load("../src/lib/session
   "../ai/context-draft-contract": contract,
 });
 const { ContextAutosave } = load("../src/lib/session-context/autosave.ts", { "./input": inputModule });
-const prompt = load("../src/lib/ai/prompts/context-draft-v1.1.ts");
+const prompt = load("../src/lib/ai/prompts/context-draft-v1.2.ts");
 const config = load("../src/lib/ai/server/config.ts", { "server-only": {}, "../context-draft-contract": contract });
 const OpenAI = require("openai").default;
 let sdkResult, sdkError, sdkCalls = [];
@@ -50,7 +50,7 @@ Object.assign(FakeOpenAI, {
 });
 const generator = load("../src/lib/ai/server/context-draft.ts", {
   "server-only": {}, openai: { default: FakeOpenAI },
-  "../prompts/context-draft-v1.1": prompt, "../../constants/research-options": options,
+  "../prompts/context-draft-v1.2": prompt, "../../constants/research-options": options,
   "../context-draft-contract": contract, "./config": config,
 });
 const service = load("../src/lib/ai/server/context-draft-service.ts", {
@@ -209,16 +209,23 @@ test("upstream inputs changed and reverted still discard pending response", asyn
 });
 
 test("context-draft prompt revision avoids first-person openings and exact Responses parameters preserve image order", () => {
-  const original = readFileSync(new URL("../src/lib/ai/prompts/context-draft-v1.0.ts", import.meta.url));
-  assert.equal(createHash("sha256").update(original).digest("hex"),
-    "fcc2f23abc35becaf02a520cd2768cbb35c0ed6809a9af143dd8e3451a82d8be");
-  assert.equal(prompt.CONTEXT_DRAFT_PROMPT_VERSION, "context-draft-v1.1");
+  assert.equal(createHash("sha256").update(prompt.CONTEXT_DRAFT_PROMPT).digest("hex"),
+    "17318cdb30e7072a5e6a2c1dc4441be17ea8959b6c76e1ef86c798109c1004dc");
+  assert.equal(prompt.CONTEXT_DRAFT_PROMPT_VERSION, "context-draft-v1.2");
   assert.match(prompt.CONTEXT_DRAFT_PROMPT, /주어를 생략/u);
   assert.match(prompt.CONTEXT_DRAFT_PROMPT, /문장 첫머리에 "저는"을 사용하지 않는다/u);
   assert.doesNotMatch(prompt.CONTEXT_DRAFT_PROMPT, /저는 디자이너/u);
-  const source = readFileSync(new URL("../src/lib/ai/prompts/context-draft-v1.1.ts", import.meta.url));
-  assert.match(source.toString(), /context-draft-v1\.1/u);
-  assert.doesNotMatch(source.toString(), /context-draft-v1\.0/u);
+  assert.match(prompt.CONTEXT_DRAFT_PROMPT, /실제 점검 수행 여부와 구분/u);
+  for (const rule of [
+    /작업의 목적, 상태, 점검 대상을 설명/u,
+    /목적은 입력에서 확인되는 경우에만/u,
+    /"점검하고 싶어요", "확인해 보고 싶어요".*표현은 피한다/u,
+    /선택값만으로 검토 계획이 확정되었다고 가정하지 않는다/u,
+    /작업이 완료되었거나 특정 검토가 진행 중이라고 임의로 가정하지 않는다/u,
+    /사용자가 수정한 작업 맥락의 의미는 보존/u,
+    /사용자가 직접 작성한 문장이나 기존에 저장한 맥락을 재작성하지 않는다/u,
+  ]) assert.match(prompt.CONTEXT_DRAFT_PROMPT, rule);
+  assert.doesNotMatch(prompt.CONTEXT_DRAFT_PROMPT, /3\. 현재 무엇을 점검하고 있는지는/u);
   for (const count of [1, 10]) {
     const urls = Array.from({ length: count }, (_, i) => `https://signed.invalid/${i}`);
     const params = generator.draftParameters("configured-id", { ...valid, additional_context: "not sent" }, urls);
@@ -249,6 +256,7 @@ test("SDK mock uses no retries, timeout, abort signal; classifies 429, API and t
   assert.equal(sdkCalls[0].settings.maxRetries, 0);
   assert.equal(sdkCalls[0].settings.timeout, 60000);
   assert.equal(sdkCalls[0].settings.logLevel, "off");
+  assert.equal(sdkCalls[0].params.instructions, prompt.CONTEXT_DRAFT_PROMPT);
   assert.equal(sdkCalls[0].requestOptions.signal, signal);
   for (const [error, code] of [
     [new OpenAI.APIConnectionTimeoutError(), "DRAFT-TIMEOUT"],

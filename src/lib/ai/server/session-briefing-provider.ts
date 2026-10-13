@@ -9,7 +9,7 @@ import {
   briefingInputSchema,
   briefingResultSchema,
 } from "@/lib/session-completion/briefing-contract";
-import { SESSION_DESIGN_BRIEFING_PROMPT } from "@/lib/ai/prompts/session-design-briefing-v1.3";
+import { SESSION_DESIGN_BRIEFING_PROMPT } from "@/lib/ai/prompts/session-design-briefing-v1.4";
 import { SESSION_DESIGN_BRIEFING_SCHEMA } from "@/lib/ai/schemas/session-design-briefing-v1.0";
 import { SessionBriefingProviderError, type SessionBriefingProvider } from "./session-briefing-service";
 

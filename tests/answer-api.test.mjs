@@ -302,10 +302,9 @@ test("sentence refinement provider uses one non-stored Responses request without
 
 test("sentence refinement v1.1 prompt preserves uncertainty and limits professionalization to a Mock contract",async()=>{
   const load=loader();
-  const original=load("src/lib/ai/prompts/sentence-refinement-v1.0.ts").SENTENCE_REFINEMENT_PROMPT;
   const updated=load("src/lib/ai/prompts/sentence-refinement-v1.1.ts").SENTENCE_REFINEMENT_PROMPT;
-  assert.match(original,/의미 보존/);
-  assert.match(original,/새로운 사실이나 사용자가 표현하지 않은 의도도 추가하지 마세요/);
+  assert.match(updated,/의미 보존/);
+  assert.match(updated,/새로운 사실이나 사용자가 표현하지 않은 의도도 추가하지 마세요/);
   for(const clause of [
     /사용자의 감정, 불확실성, 추측, 유보와 확신의 정도를 바꾸지 마세요/,
     /디자인 의사결정과 검토 과정을 설명하는 데 적합한 자연스럽고 전문적인 문장/,
@@ -315,7 +314,6 @@ test("sentence refinement v1.1 prompt preserves uncertainty and limits professio
     /이미 충분히 자연스럽고 전문적인 문장은 억지로 바꾸지 마세요/,
     /짧은 답변은 원문과 비슷한 길이로 간결하게 유지/,
   ])assert.match(updated,clause);
-  assert.notEqual(updated,original);
 
   const scenarios=[
     ["잘 모르겠음","아직 구체적인 방향을 정하지 못한 상태이다."],
