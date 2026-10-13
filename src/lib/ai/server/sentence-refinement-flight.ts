@@ -15,7 +15,7 @@ export function runSentenceRefinement(
     if(existing.revision!==revision)throw new SentenceRefinementError("REFINE-BUSY",409);
     return existing.promise;
   }
-  if(flights.size>=MAX_FLIGHTS)throw new SentenceRefinementError("REFINE-RATE",429);
+  if(flights.size>=MAX_FLIGHTS)throw new SentenceRefinementError("REFINE-CAPACITY",429);
   const promise=Promise.resolve().then(operation).finally(()=>{
     if(flights.get(key)?.promise===promise)flights.delete(key);
   });

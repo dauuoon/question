@@ -489,7 +489,7 @@ test("refinement rejects changed text/version/revision and session completion af
 });
 
 test("refinement failures never overwrite originals and aborted requests do not persist",async(t)=>{
-  for(const code of ["REFINE-REFUSAL","REFINE-INCOMPLETE","REFINE-OUTPUT","REFINE-TIMEOUT","REFINE-RATE","REFINE-CONFIG"]) {
+  for(const code of ["REFINE-REFUSAL","REFINE-INCOMPLETE","REFINE-OUTPUT","REFINE-TIMEOUT","REFINE-RATE","REFINE-QUOTA","REFINE-CAPACITY","REFINE-CONFIG"]) {
     const route=routeLoader({refineHook:()=>{
       const {SentenceRefinementError}=route.load("src/lib/ai/sentence-refinement-contract.ts");
       throw new SentenceRefinementError(code);
@@ -548,7 +548,7 @@ test("provider strictly validates output envelope, plain text, length and editor
 });
 
 test("mock SDK maps timeout, rate, model access and transport errors without retries or input leaks",async()=>{
-  for(const variant of ["timeout","rate","model","transport","refusal","incomplete"]) {
+  for(const variant of ["timeout","rate","quota","billing","model","transport","refusal","incomplete"]) {
     let calls=0;
     class MockOpenAI {
       static APIError=class extends Error {constructor(status,code){super("PRIVATE");this.status=status;this.code=code;}};
@@ -559,6 +559,8 @@ test("mock SDK maps timeout, rate, model access and transport errors without ret
           calls++;
           if(variant==="timeout")throw new MockOpenAI.APIConnectionTimeoutError();
           if(variant==="rate")throw new MockOpenAI.APIError(429);
+          if(variant==="quota")throw new MockOpenAI.APIError(429,"insufficient_quota");
+          if(variant==="billing")throw new MockOpenAI.APIError(429,"billing_hard_limit_reached");
           if(variant==="model")throw new MockOpenAI.APIError(404,"model_not_found");
           if(variant==="transport")throw new Error("PRIVATE");
           if(variant==="refusal")return {status:"completed",output:[{
@@ -571,11 +573,46 @@ test("mock SDK maps timeout, rate, model access and transport errors without ret
     const provider=loader({openai:{default:MockOpenAI}})("src/lib/ai/server/sentence-refinement.ts");
     await assert.rejects(provider.refineSentence({apiKey:"mock-only",model:"mock-model"},"TEST",
       new globalThis.AbortController().signal),error=>error.code==={
-      timeout:"REFINE-TIMEOUT",rate:"REFINE-RATE",model:"REFINE-CONFIG",transport:"REFINE-API",
+      timeout:"REFINE-TIMEOUT",rate:"REFINE-RATE",quota:"REFINE-QUOTA",billing:"REFINE-QUOTA",
+      model:"REFINE-CONFIG",transport:"REFINE-API",
       refusal:"REFINE-REFUSAL",incomplete:"REFINE-INCOMPLETE",
     }[variant]&&!error.message.includes("PRIVATE"));
     assert.equal(calls,1);
   }
+});
+
+test("quota and temporary capacity failures have distinct messages and retry headers without answer writes",async()=>{
+  for(const [code,status,retryAfter] of [
+    ["REFINE-QUOTA",503,null],["REFINE-RATE",429,"60"],["REFINE-CAPACITY",429,"60"],
+  ]) {
+    const route=routeLoader({refineHook:()=>{
+      const {SentenceRefinementError}=route.load("src/lib/ai/sentence-refinement-contract.ts");
+      throw new SentenceRefinementError(code,status);
+    }});
+    const result=await route.load("src/app/api/sentence-refinement/route.ts").POST(
+      response("/api/sentence-refinement",refinementInput));
+    assert.equal(result.status,status);
+    assert.equal(result.headers.get("Retry-After"),retryAfter);
+    const body=await result.json();
+    assert.equal(body.errorCode,code);
+    assert.match(body.message,code==="REFINE-QUOTA"?/관리자에게 문의/u:/잠시 후/u);
+    assert.equal(route.calls.writes.length,0);
+    assert.equal(route.calls.activity.length,0);
+  }
+});
+
+test("process capacity is distinguished from provider rate limits and clears after pending work",async()=>{
+  const {runSentenceRefinement}=loader()("src/lib/ai/server/sentence-refinement-flight.ts");
+  let release;
+  const pending=new Promise(resolve=>{release=resolve;});
+  const calls=Array.from({length:100},(_,i)=>runSentenceRefinement("mock-user",`mock-question-${i}`,
+    "revision",()=>pending));
+  assert.throws(()=>runSentenceRefinement("mock-user","overflow","revision",()=>pending),
+    error=>error.code==="REFINE-CAPACITY"&&error.status===429);
+  release({refined_text:"Mock only",updated_at:"revision"});
+  await Promise.all(calls);
+  assert.equal((await runSentenceRefinement("mock-user","overflow","revision",
+    async()=>({refined_text:"Mock only",updated_at:"revision"}))).refined_text,"Mock only");
 });
 
 const actionInput={

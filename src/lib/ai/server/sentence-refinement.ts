@@ -68,6 +68,11 @@ export async function refineSentence(
       throw new SentenceRefinementError("REFINE-TIMEOUT",504);
     }
     if(error instanceof OpenAI.APIError && error.status===429) {
+      const quotaExceeded=error.code==="insufficient_quota" || error.code==="billing_hard_limit_reached";
+      console.error("WHY BOX sentence refinement provider rejected request", {
+        status:429,category:quotaExceeded?"quota_exhausted":"rate_limited",
+      });
+      if(quotaExceeded)throw new SentenceRefinementError("REFINE-QUOTA",503);
       throw new SentenceRefinementError("REFINE-RATE",429);
     }
     if(error instanceof OpenAI.APIError && ([401,403,404].includes(error.status??0) ||

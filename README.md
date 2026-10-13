@@ -1348,7 +1348,15 @@ answers still require separate approval; enabling configuration does not expand
 the authorized one-call validation scope.
 
 The provider uses `store:false`, non-streaming text output, `maxRetries:0`,
-a 60-second deadline and a bounded output token budget. Input and output are
+a 60-second deadline and a bounded output token budget. Requests are
+subject to provider availability: HTTP 429 with `insufficient_quota` or
+`billing_hard_limit_reached` is reported as `REFINE-QUOTA` (503, administrator
+action required), while other provider 429 responses remain `REFINE-RATE`.
+Process-local flight saturation is separately reported as `REFINE-CAPACITY`.
+Safe provider diagnostics record only status and a fixed category, not answer
+text, credentials, raw provider messages or response bodies. No automatic
+provider retries are introduced; these failures do not write refined answers.
+Input and output are
 limited to 20,000 UTF-16 code units, consistent with the answer editor/save
 contract. Refusal, incomplete, empty, malformed, unexpected tool/multiple-message
 output and common commentary/Markdown wrappers are rejected. Incomplete output
