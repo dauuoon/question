@@ -42,13 +42,14 @@ function view(state = "editable", n = 3) {
     question_actions:{ready:false,reserve_count:0,
       reserve_count_by_question:Object.fromEntries((state==="completed"?Array.from({length:n},(_,i)=>
         `50000000-0000-4000-8000-${String(i+1).padStart(12,"0")}`):[]).map(id=>[id,0]))},
-    answer_editable:state==="completed",
+    answer_editable:state==="completed",followup_enabled:false,readability_improved:true,
     questions: state === "completed" ? Array.from({length:n}, (_,i)=>({
       id: `50000000-0000-4000-8000-${String(i+1).padStart(12,"0")}`, slot_index:i+1, question_text:`TEST question ${i+1}`,
       status:"unprocessed",regeneration_index:0,
       targets:[{image_id:imageId,x:0.1+i*0.1,y:0.2,width:0.15,height:0.12,sort_order:0}],
       answer:{original_answer:"",refined_answer:null,refinement_used:false,
         current_answer_version:"original",updated_at:null},
+      followup_question:null,last_followup_request:null,
     })) : [],
     images:state==="completed"?[{id:imageId,sort_order:0,width:1200,height:800,
       signed_url:"https://private-test.supabase.co/storage/v1/object/sign/why-box-images/test"}]:[] };
@@ -72,6 +73,201 @@ const { GenerationController, GENERATION_MAX_READS, GENERATION_POLL_MS, GENERATI
   load("src/lib/question-generation/controller.ts");
 const settle = async () => { for(let i=0;i<12;i++) await Promise.resolve(); };
 const deferred = () => { let resolve; const promise = new Promise(r=>{resolve=r;}); return {promise,resolve}; };
+
+function participantView() {
+  const result=view("completed");
+  result.followup_enabled=true;
+  result.readability_improved=true;
+  result.questions[0].status="answered";
+  result.questions[0].answer.original_answer="TEST saved reflection";
+  result.questions[0].answer.updated_at="2026-10-08T11:00:00.000Z";
+  return result;
+}
+
+function generatedFollowup(result) {
+  const next=structuredClone(result);
+  next.questions[0].followup_question={
+    id:"80000000-0000-4000-8000-000000000001",question_text:"TEST follow-up perspective?",
+    status:"unprocessed",answer:{original_answer:"",refined_answer:null,refinement_used:false,
+      current_answer_version:"original",updated_at:null},
+  };
+  return next;
+}
+
+test("generation-disabled participant keeps answer readability without exposing the follow-up button",async t=>{
+  const ui=await mountResult(t,view("completed"));
+  assert.equal(ui.host.querySelector(".question-followup-button"),null);
+  assert.ok(ui.host.querySelector(".question-readability"));
+  assert.ok(ui.host.querySelector(".question-refine-button"));
+  assert.equal(ui.host.querySelector("#question-answer-text").disabled,false);
+});
+
+test("participant button waits for the latest autosave and prevents duplicate requests before locking",async t=>{
+  const initial=participantView(),save=deferred(),generation=deferred(),requests=[];
+  const ui=await mountResult(t,initial,async(url,options)=>{
+    requests.push({url,body:JSON.parse(options.body)});
+    if(url==="/api/question-answer") {
+      await save.promise;
+      return json({success:true,answer_version:"original",updated_at:"2026-10-08T11:00:01.000Z"});
+    }
+    await generation.promise;
+    const next=generatedFollowup(initial);
+    next.questions[0].answer.original_answer="TEST latest reflection";
+    next.questions[0].answer.updated_at="2026-10-08T11:00:01.000Z";
+    return json({outcome:"generated",view:next,activity_recorded:true});
+  });
+  const textarea=ui.host.querySelector("#question-answer-text");
+  await act(async()=>{
+    Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype,"value")
+      .set.call(textarea,"TEST latest reflection");
+    textarea.dispatchEvent(new ui.dom.window.Event("input",{bubbles:true}));
+    await settle();
+    ui.host.querySelector(".question-followup-button").click();
+    await settle();
+  });
+  assert.deepEqual(requests.map(r=>r.url),["/api/question-answer"]);
+  assert.equal(textarea.disabled,true);
+  assert.equal(ui.host.querySelector(".question-followup-button").disabled,true);
+  await act(async()=>{save.resolve();await settle();});
+  assert.equal(requests.length,2);
+  assert.equal(requests[1].body.expected_updated_at,"2026-10-08T11:00:01.000Z");
+  await act(async()=>{ui.host.querySelector(".question-followup-button").click();await settle();});
+  assert.equal(requests.length,2);
+  await act(async()=>{generation.resolve();await settle();});
+  const locked=ui.host.querySelector("#question-answer-text");
+  assert.equal(locked.readOnly,true);
+  assert.equal(locked.disabled,false);
+  assert.equal(locked.value,"TEST latest reflection");
+  assert.equal(ui.host.querySelector(".question-refine-button").disabled,true);
+  assert.ok(ui.host.querySelector("#question-followup-answer-text"));
+  assert.equal(requests.length,2);
+});
+
+test("a saved follow-up restores read-only original and editable optional child with generation disabled",async t=>{
+  const result=generatedFollowup(participantView());
+  result.followup_enabled=false;
+  result.questions[0].answer.refinement_used=true;
+  result.questions[0].answer.refined_answer="TEST selected refined reflection";
+  result.questions[0].answer.current_answer_version="refined";
+  result.questions[0].followup_question.answer.original_answer="TEST restored child";
+  result.questions[0].followup_question.answer.updated_at="2026-10-08T11:00:01.000Z";
+  const ui=await mountResult(t,result,async()=>{throw new Error("No writes expected");});
+  assert.equal(ui.host.querySelector("#question-answer-text").readOnly,true);
+  assert.equal(ui.host.querySelector("#question-answer-text").value,"TEST selected refined reflection");
+  assert.equal(ui.host.querySelector("#question-followup-answer-text").value,"TEST restored child");
+  assert.equal(ui.host.querySelector("#question-followup-answer-text").disabled,false);
+  assert.equal(ui.host.querySelector(".question-answer-version-button"),null);
+  assert.equal(ui.host.querySelector(".question-followup-button"),null);
+  assert.ok(ui.host.querySelector(".question-readability"));
+});
+
+test("participant no-follow-up blocks identical answers and enables the button after an edit",async t=>{
+  const initial=participantView(),next=structuredClone(initial);
+  next.questions[0].last_followup_request={
+    request_id:requestId,status:"no_followup",answer_snapshot:initial.questions[0].answer.original_answer,
+    created_at:"2026-10-22T00:00:00.000Z",prompt_version:"question-followup-v1.0",
+    model_id:"test-model",input_tokens:12,output_tokens:8,
+  };
+  let calls=0;
+  const ui=await mountResult(t,initial,async()=>{calls++;return json({outcome:"no_followup",view:next,activity_recorded:true});});
+  await act(async()=>{ui.host.querySelector(".question-followup-button").click();await settle();});
+  assert.equal(calls,1);
+  assert.equal(ui.host.querySelector(".question-followup-button").disabled,true);
+  assert.equal(ui.host.querySelector("#question-answer-text").readOnly,false);
+  assert.match(ui.host.textContent,/현재 답변에서 추가로 탐색할 질문이 없습니다/);
+  assert.match(ui.host.querySelector(".toast-box[role='status']").textContent,
+    /현재 답변에서 추가로 탐색할 질문이 없습니다/);
+  assert.equal(ui.host.querySelector(".question-followup-notice"),null);
+  await act(async()=>{
+    const textarea=ui.host.querySelector("#question-answer-text");
+    Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype,"value")
+      .set.call(textarea,"TEST changed reflection");
+    textarea.dispatchEvent(new ui.dom.window.Event("input",{bubbles:true}));
+    await settle();
+  });
+  assert.equal(ui.host.querySelector(".question-followup-button").disabled,false);
+  assert.equal(calls,1);
+});
+
+test("participant empty answers cannot request a follow-up",async t=>{
+  const result=participantView();
+  result.questions[0].answer.original_answer=" \n ";
+  const ui=await mountResult(t,result,async()=>{throw new Error("No request allowed");});
+  assert.equal(ui.host.querySelector(".question-followup-button").disabled,true);
+});
+
+test("follow-up answers flush under their own ID before navigating away",async t=>{
+  const initial=generatedFollowup(participantView()),pending=deferred(),calls=[];
+  const childId=initial.questions[0].followup_question.id;
+  const ui=await mountResult(t,initial,async(url,options)=>{
+    calls.push({url,body:JSON.parse(options.body)});
+    await pending.promise;
+    return json({success:true,answer_version:"original",updated_at:"2026-10-22T11:00:00.000Z"});
+  });
+  await act(async()=>{
+    const textarea=ui.host.querySelector("#question-followup-answer-text");
+    Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype,"value")
+      .set.call(textarea,"TEST optional child draft");
+    textarea.dispatchEvent(new ui.dom.window.Event("input",{bubbles:true}));
+    await settle();
+    ui.host.querySelector('[aria-label="질문 2 선택"]').click();
+    await settle();
+  });
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].url,"/api/question-answer");
+  assert.equal(calls[0].body.question_id,childId);
+  assert.equal(calls[0].body.answer_text,"TEST optional child draft");
+  assert.match(ui.host.querySelector(".question-panel-count").textContent,/질문 1/);
+  await act(async()=>{pending.resolve();await settle();});
+  assert.match(ui.host.querySelector(".question-panel-count").textContent,/질문 2/);
+});
+
+test("failed recovery restores editing and unknown recovery suppresses an identical new request",async t=>{
+  for(const outcome of ["failed","outcome_unknown"]) {
+    const initial=participantView(),next=structuredClone(initial),calls=[];
+    initial.questions[0].last_followup_request={
+      request_id:requestId,status:"dispatch_started",answer_snapshot:initial.questions[0].answer.original_answer,
+      created_at:"2026-10-22T00:00:00.000Z",prompt_version:"question-followup-v1.0",
+      model_id:"test-model",input_tokens:null,output_tokens:null,
+    };
+    next.questions[0].last_followup_request={...initial.questions[0].last_followup_request,status:outcome};
+    const ui=await mountResult(t,initial,async(url,options)=>{
+      calls.push({url,method:options.method});
+      return json({outcome,view:next,activity_recorded:true});
+    });
+    await act(async()=>{ui.host.querySelector(".question-followup-button").click();await settle();});
+    assert.deepEqual(calls,[{url:`/api/question-followup?request_id=${requestId}`,method:"GET"}]);
+    assert.equal(ui.host.querySelector("#question-answer-text").readOnly,false);
+    assert.equal(ui.host.querySelector("#question-answer-text").disabled,false);
+    assert.equal(ui.host.querySelector(".question-followup-button").disabled,outcome==="outcome_unknown");
+    await ui.close();
+  }
+});
+
+test("participant readability stays scoped to question results while other screen typography stays global",()=>{
+  const css=readFileSync("src/app/globals.css","utf8");
+  assert.match(css,/body \{[^}]*-webkit-font-smoothing: antialiased;/);
+  assert.match(css,/\.question-readability \{[^}]*--font-family-base: -apple-system,[^}]*font-family:var\(--font-family-base\);[^}]*-webkit-font-smoothing:auto;/);
+  const resultFontRule=css.match(/\.question-readability \{[^}]*\}/)?.[0];
+  assert.ok(resultFontRule);
+  assert.doesNotMatch(resultFontRule,/Pretendard/);
+  assert.match(css,/\.question-readability \.question-answer-textarea::placeholder \{ color:var\(--color-text-secondary\)/);
+  assert.match(css,/\.question-answer-textarea \{[^}]*font:inherit;/);
+  assert.match(css,/\.question-readability \.question-answer-textarea\.has-answer-diff \{ -webkit-text-fill-color:transparent; \}/);
+  assert.match(css,/\.question-readability \.question-answer-diff \{[^}]*font-weight:var\(--font-weight-regular\)/);
+  assert.match(css,/\.question-readability \.question-answer-textarea::placeholder \{[^}]*font-weight:var\(--font-weight-regular\)/);
+  assert.match(css,/\.question-readability \.question-answer-textarea\.question-followup-answer \{ background:#fff; color:#222;/);
+});
+
+test("follow-up input has no visible thought label and retains its accessible name",async t=>{
+  const ui=await mountResult(t,generatedFollowup(participantView()),async()=>{
+    throw new Error("No network request expected");
+  });
+  assert.equal(ui.host.querySelector(".question-followup-answer-label"),null);
+  assert.equal(ui.host.querySelector(".question-followup label"),null);
+  assert.equal(ui.host.querySelector("#question-followup-answer-text").getAttribute("aria-label"),
+    "후속 질문에 대한 나의 생각");
+});
 
 test("strict saved view contract requires contiguous ordered N slots and rejects internal metadata", () => {
   for(const n of [1,3,5]) assert.equal(contract.generationViewSchema.safeParse(view("completed",n)).success,true);
@@ -174,14 +370,18 @@ test("read-only catalog path returns ordered public questions, failed unlock and
     const values={sessions:{status,requested_question_count:3},question_generation_attempts:attempt?[attempt]:[],
       questions:questions.map(question=>({id:question.id,slot_index:question.slot_index,question_text:question.question_text,
         status:question.status,regeneration_index:question.regeneration_index})),
+      question_followup_requests:[],
       session_images:[{id:imageId,storage_path:`${owner}/${sessionId}/test.png`,sort_order:0,width:1200,height:800}],
       question_targets:questions.flatMap(q=>q.targets.map(target=>({question_id:q.id,...target}))),
       answers:questions.length?[{question_id:questions[0].id,original_answer:"TEST saved thought",refined_answer:null,
         refinement_used:false,current_answer_version:"original",updated_at:"2026-10-08T11:00:00.123456+00:00"}]:[]};
     return {rpc:async()=>({data:{ready:false,reserve_count:0,
       reserve_count_by_question:Object.fromEntries(questions.map(question=>[question.id,0]))},error:null}),from(table){
-      const q={select(columns){calls.push({table,columns});return q;},eq(){return q;},in(){return q;},order(){return q;},limit(){return q;},
-        maybeSingle:async()=>({data:values[table],error:null}),then(resolve){return Promise.resolve({data:values[table],error:null}).then(resolve);}};
+      let rows=values[table];
+      const q={select(columns){calls.push({table,columns});
+          if(table==="questions"&&columns.includes("parent_question_id"))rows=[];
+          return q;},eq(){return q;},in(){return q;},order(){return q;},limit(){return q;},
+        maybeSingle:async()=>({data:rows,error:null}),then(resolve){return Promise.resolve({data:rows,error:null}).then(resolve);}};
       return q;
     },storage:{from(bucket){assert.equal(bucket,"why-box-images");return {createSignedUrl:async(path,seconds)=>{
       assert.equal(seconds,180);assert.equal(path,`${owner}/${sessionId}/test.png`);
@@ -196,6 +396,9 @@ test("read-only catalog path returns ordered public questions, failed unlock and
   assert.equal(result.questions[0].answer.original_answer,"TEST saved thought");
   assert.equal(result.questions[0].answer.updated_at,"2026-10-08T11:00:00.123456+00:00");
   assert.equal(result.answer_editable,true);
+  assert.equal(result.followup_enabled,false);
+  assert.equal(result.readability_improved,true);
+  assert.equal(calls.some(call=>call.table==="question_followup_requests"),false);
   assert.doesNotMatch(JSON.stringify(result),/storage_path|question_id|service_role/);
   await assert.rejects(readGenerationView(caller("in_progress",null,view("completed").questions,true),owner,sessionId),
     error=>error.code==="QGEN-IMAGE");
@@ -205,9 +408,145 @@ test("read-only catalog path returns ordered public questions, failed unlock and
     ["draft",{status:"running",generated_at:null,request_id:requestId},"running"],
     ["draft",{status:"running",generated_at:"2026-10-08T00:00:00Z",request_id:requestId},"recovery"],
   ]) assert.equal((await readGenerationView(caller(status,attempt,[]),owner,sessionId)).state,state);
-  assert.ok(calls.filter(c=>c.table==="questions").every(c=>c.columns==="id,slot_index,question_text,status,regeneration_index"));
+  assert.ok(calls.filter(c=>c.table==="questions").some(c=>c.columns==="id,slot_index,question_text,status,regeneration_index"));
   await assert.rejects(readGenerationView(caller("in_progress",null,[]),owner,sessionId),e=>e.code==="QGEN-RECOVERY");
   await assert.rejects(readGenerationView(caller("unknown",null,[]),owner,sessionId),e=>e.code==="QGEN-DB");
+});
+
+test("saved follow-up and parent lock restore through the real read contract even when new generation is off",async()=>{
+  const owner=randomUUID(),childId=randomUUID();
+  const base=view("completed"),parent=base.questions[0];
+  const request={request_id:requestId,parent_question_id:parent.id,status:"generated",
+    answer_snapshot:"Saved parent answer",created_at:"2026-10-22T00:00:00.000Z",
+    prompt_version:"question-followup-v1.0",model_id:"test-model",input_tokens:12,output_tokens:8};
+  const rows={
+    sessions:{status:"in_progress",requested_question_count:3},
+    question_generation_attempts:[],
+    session_images:[{id:imageId,storage_path:`${owner}/${sessionId}/test.png`,sort_order:0,width:1200,height:800}],
+    question_targets:base.questions.map(q=>({question_id:q.id,...q.targets[0]})),
+    question_followup_requests:[request],
+    answers:[
+      {question_id:parent.id,original_answer:"Saved parent answer",refined_answer:null,refinement_used:false,
+        current_answer_version:"original",updated_at:"2026-10-08T11:00:00.000Z"},
+      {question_id:childId,original_answer:"Saved child answer",refined_answer:null,refinement_used:false,
+        current_answer_version:"original",updated_at:"2026-10-08T11:00:01.000Z"},
+    ],
+  };
+  const caller={
+    rpc:async()=>({data:base.question_actions,error:null}),
+    from(table) {
+      let data=rows[table];
+      const q={select(columns){
+        if(table==="questions")data=columns.includes("parent_question_id")?
+          [{id:childId,parent_question_id:parent.id,question_text:"A follow-up?",status:"answered"}]:
+          base.questions.map(({id,slot_index,question_text,status,regeneration_index})=>
+            ({id,slot_index,question_text,status,regeneration_index}));
+        return q;
+      },eq(column,value){
+        if(table==="question_followup_requests")data=data.filter(row=>column!=="participant_id"&&column!=="session_id"?
+          row[column]===value:true);
+        return q;
+      },in(){return q;},order(){return q;},limit(n){if(Array.isArray(data))data=data.slice(0,n);return q;},
+      maybeSingle:async()=>({data,error:null}),
+      then(resolve){return Promise.resolve({data,error:null}).then(resolve);}};
+      return q;
+    },
+    storage:{from:()=>({createSignedUrl:async()=>({data:{signedUrl:base.images[0].signed_url},error:null})})},
+  };
+  const {readGenerationView}=loader({
+    "./followup-access":{readQuestionFollowupAccess:async()=>({enabled:false})},
+  })("src/lib/question-generation/read.ts");
+  const result=await readGenerationView(caller,owner,sessionId);
+  assert.equal(result.followup_enabled,false);
+  assert.equal(result.readability_improved,true);
+  assert.equal(result.questions.length,3);
+  assert.equal(result.questions[0].followup_question.id,childId);
+  assert.equal(result.questions[0].followup_question.answer.original_answer,"Saved child answer");
+  assert.equal(result.questions[0].last_followup_request.status,"generated");
+  assert.equal(contract.generationViewSchema.safeParse(result).success,true);
+});
+
+test("large and skewed request history restores only each active parent's latest state without truncating other parents",async()=>{
+  const owner=randomUUID(),base=participantView(),parent=base.questions[0],childId=randomUUID();
+  const request=(question,index,status="no_followup")=>({
+    id:`90000000-0000-4000-8000-${String(index).padStart(12,"0")}`,session_id:sessionId,participant_id:owner,
+    request_id:randomUUID(),parent_question_id:question.id,status,answer_snapshot:`Saved answer ${index}`,
+    created_at:new Date(Date.UTC(2026,9,22,0,0,index)).toISOString(),
+    prompt_version:"question-followup-v1.0",model_id:"offline",input_tokens:12,output_tokens:8,
+  });
+  const history=Array.from({length:1500},(_,i)=>request(parent,i));
+  const latest=request(parent,1501,"generated");
+  const second=request(base.questions[1],1,"no_followup");
+  const third=request(base.questions[2],2,"outcome_unknown");
+  history.push(latest,second,third,request({...parent,id:randomUUID()},2000,"failed"));
+  const original=JSON.stringify(history);
+  const queries=[];
+  let failHistory=false;
+  const rows={
+    sessions:{status:"in_progress",requested_question_count:3},
+    profiles:{role:"participant",status:"active"},
+    question_generation_attempts:[],
+    question_followup_requests:history,
+    session_images:[{id:imageId,storage_path:`${owner}/${sessionId}/test.png`,sort_order:0,width:1200,height:800}],
+    question_targets:base.questions.map(q=>({question_id:q.id,...q.targets[0]})),
+    answers:[{question_id:childId,original_answer:"Restored independent child answer",refined_answer:null,
+      refinement_used:false,current_answer_version:"original",updated_at:"2026-10-22T01:00:00.000Z"}],
+  };
+  const caller={
+    rpc:async()=>({data:base.question_actions,error:null}),
+    from(table){
+      let data=rows[table],columns,limit;
+      const filters=[],orders=[];
+      const query={
+        select(value){
+          columns=value;
+          if(table==="questions")data=value.includes("parent_question_id")?
+            [{id:childId,parent_question_id:parent.id,question_text:"Saved child?",status:"answered"}]:
+            base.questions.map(({id,slot_index,question_text,status,regeneration_index})=>
+              ({id,slot_index,question_text,status,regeneration_index}));
+          return query;
+        },
+        eq(column,value){filters.push([column,value]);return query;},
+        in(){return query;},
+        order(column,options){orders.push([column,options]);return query;},
+        limit(value){limit=value;return query;},
+        maybeSingle:async()=>({data,error:null}),
+        then(resolve){
+          if(table==="question_followup_requests"){
+            assert.equal(limit,1);
+            assert.deepEqual(orders,[["created_at",{ascending:false}],["id",{ascending:false}]]);
+            assert.ok(filters.some(([k,v])=>k==="session_id"&&v===sessionId));
+            assert.ok(filters.some(([k,v])=>k==="participant_id"&&v===owner));
+            data=data.filter(row=>filters.every(([k,v])=>row[k]===v)).sort((a,b)=>
+              b.created_at.localeCompare(a.created_at)||b.id.localeCompare(a.id)).slice(0,limit)
+              .map(row=>Object.fromEntries(columns.split(",").map(k=>[k,row[k]])));
+            queries.push(data);
+          }
+          return Promise.resolve({data,error:failHistory&&table==="question_followup_requests"?{code:"DB"}:null}).then(resolve);
+        },
+      };
+      return query;
+    },
+    storage:{from:()=>({createSignedUrl:async()=>({data:{signedUrl:base.images[0].signed_url},error:null})})},
+  };
+  const {readGenerationView}=loader({
+    "./followup-access":{readQuestionFollowupAccess:(client,userId)=>
+      load("src/lib/question-generation/followup-access.ts").readQuestionFollowupAccess(
+        client,userId,{OPENAI_QUESTION_FOLLOWUP_ENABLED:"true"})},
+  })("src/lib/question-generation/read.ts");
+  const result=await readGenerationView(caller,owner,sessionId);
+  assert.equal(result.followup_enabled,true);
+  assert.equal(result.readability_improved,true);
+  assert.deepEqual(result.questions.map(q=>q.last_followup_request.request_id),
+    [latest.request_id,second.request_id,third.request_id]);
+  assert.equal(result.questions[0].followup_question.answer.original_answer,"Restored independent child answer");
+  assert.equal(queries.length,3);
+  assert.equal(queries.flat().length,3);
+  assert.equal(contract.generationViewSchema.safeParse(result).success,true);
+  assert.doesNotMatch(JSON.stringify(result),/participant_id|parent_question_id/);
+  assert.equal(JSON.stringify(history),original);
+  failHistory=true;
+  await assert.rejects(readGenerationView(caller,owner,sessionId),error=>error.code==="QGEN-DB");
 });
 
 async function mount(t, {initial=view(),input=valid,imageCount=1,available=true,saveResult,
@@ -1347,15 +1686,17 @@ test("GET authenticates owner and is no-store without generation/trusted writes;
         reserve_count_by_question:Object.fromEntries(completed.questions.map(question=>[question.id,0]))},error:null}),
       from(table){
         calls.push(table);
+        const filters=[];
         const values=table==="profiles"?{role:variant==="admin"?"admin":"participant",status:variant==="inactive"?"deactivated":"active"}:
           table==="sessions"?(variant==="foreign"?null:{status:"in_progress",requested_question_count:3}):
             table==="questions"?completed.questions.map(question=>({id:question.id,slot_index:question.slot_index,question_text:question.question_text,
               status:question.status,regeneration_index:question.regeneration_index})):
               table==="session_images"?[{id:imageId,storage_path:`${owner}/${sessionId}/test.png`,sort_order:0,width:1200,height:800}]:
                 table==="question_targets"?completed.questions.flatMap(question=>question.targets.map(target=>({question_id:question.id,...target}))):[];
-        const q={select(){return q;},eq(){return q;},in(){return q;},abortSignal(){return q;},order(){return q;},limit(){return q;},
+        const q={select(){return q;},eq(...args){filters.push(args);return q;},in(...args){filters.push(args);return q;},abortSignal(){return q;},order(){return q;},limit(){return q;},
           maybeSingle:async()=>({data:values,error:variant==="db-error"?{code:"PRIVATE"}:null}),
-          then(resolve){return Promise.resolve({data:values,error:null}).then(resolve);}};
+          then(resolve){const data=table==="questions"&&filters.some(([column,value])=>
+            column==="question_kind"&&value==="followup")?[]:values;return Promise.resolve({data,error:null}).then(resolve);}};
         return q;
       },
       storage:{from:()=>({createSignedUrl:async()=>({data:{signedUrl:"https://private-test.supabase.co/storage/v1/object/sign/why-box-images/test"},error:null})})},
@@ -1571,6 +1912,9 @@ test("ambiguous session completion exposes recovery and retries only the same re
   await act(async()=>{confirm.click();await settle();});
   assert.equal(requests.length,1);
   assert.match(ui.host.querySelector(".completion-status").textContent,/같은 요청의 상태만 확인/u);
+  assert.ok(ui.host.querySelector(".completion-status.is-recovery"));
+  assert.match(readFileSync("src/app/globals.css","utf8"),
+    /\.completion-status\.is-recovery \{ text-align:center; \}/);
   const check=[...ui.host.querySelectorAll(".completion-status button")]
     .find(button=>button.textContent.trim()==="같은 요청 결과 확인");
   assert.ok(check);

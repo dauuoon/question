@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { mkdir, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { resolve } from "node:path";
 import process from "node:process";
@@ -225,6 +225,49 @@ test("fresh disposable loopback PostgreSQL 17: independent regeneration races an
         where session_id=${quote(f.session)} and dispatched_at is not null;`), 2);
       assert.deepEqual(await json(pinsSQL(f)), before);
       assert.deepEqual(await json(targetsSQL(f)), pins);
+    });
+    await t.test("follow-up admission, dispatch and parent locks serialize across independent connections",async()=>{
+      const f=await fixture();const q=f.questions[0];const requestId=randomUUID();
+      const text="A synthetic design decision.";
+      const hash=createHash("sha256").update(text).digest("hex");
+      await exec(answerSQL(q,text));
+      await exec(`${auth()} update public.sessions set status='in_progress' where id=${quote(f.session)};`);
+      const beginFollowup=(id)=>`${auth()} select public.begin_question_followup(
+        ${quote(f.session)},${quote(q.id)},${quote(id)},${quote(owner)},
+        (select updated_at from public.answers where question_id=${quote(q.id)}),
+        ${quote(hash)},${quote(text)},'question-followup-v1.0') as result;`;
+      const {pending:admission}=await hold(beginFollowup(requestId),"followup_admit_a");
+      const same=run(beginFollowup(requestId),"followup_admit_same");
+      const different=run(beginFollowup(randomUUID()),"followup_admit_other");
+      await blocked(["followup_admit_same","followup_admit_other"]);
+      const reserved=parsed(await admission).at(-1);
+      const sameResult=await same;const differentResult=await different;
+      assert.equal(sameResult.ok,true,sameResult.err);
+      assert.equal(differentResult.ok,true,differentResult.err);
+      assert.equal(parsed(sameResult).at(-1).id,reserved.id);
+      assert.equal(parsed(differentResult).at(-1).id,reserved.id);
+      const dispatchFollowup=`${auth()} select public.dispatch_question_followup(
+        ${quote(reserved.id)},'LOCAL-MOCK') as result;`;
+      const {pending:dispatch}=await hold(dispatchFollowup,"followup_dispatch_a");
+      const duplicate=run(dispatchFollowup,"followup_dispatch_b");
+      await blocked(["followup_dispatch_b"]);
+      assert.equal(parsed(await dispatch).at(-1).acquired,true);
+      const duplicateResult=await duplicate;
+      assert.equal(duplicateResult.ok,true,duplicateResult.err);
+      assert.equal(parsed(duplicateResult).at(-1).acquired,false);
+      const finish=`${auth()} select public.finish_question_followup(
+        ${quote(reserved.id)},'generated','What evidence supports that choice?',
+        'LOCAL-MOCK',120,24,null) as result;`;
+      const {pending:finishing}=await hold(finish,"followup_finish");
+      const edit=run(`${auth("authenticated")} update public.answers set original_answer='Edited'
+        where question_id=${quote(q.id)};`,"followup_parent_edit");
+      await blocked(["followup_parent_edit"]);
+      assert.equal(parsed(await finishing).at(-1).status,"generated");
+      await expectFailure(edit,/Answer is locked after follow-up generation/);
+      assert.equal(await json(`select to_jsonb(count(*)) from public.question_followup_requests
+        where root_question_id=${quote(q.id)} and status='generated';`),1);
+      assert.equal(await json(`select to_jsonb(count(*)) from public.questions
+        where parent_question_id=${quote(q.id)} and question_kind='followup';`),1);
     });
     console.log("VERIFIED fresh PostgreSQL 17 loopback cluster; no remote credentials or provider calls");
   } finally {

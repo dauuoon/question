@@ -14,6 +14,7 @@ export const migrations = [
   "20261006031000_image_deletion.sql", "20261008031500_question_generation_foundation.sql",
   "20261008220000_answer_refinement_version.sql", "20261009002000_question_actions.sql",
   "20261010001500_question_regeneration.sql",
+  "20261012230000_question_followups.sql",
 ];
 export const generatedAt = "2026-10-09T15:00:00Z";
 export const quote = (value) => value === null ? "null" : `'${String(value).replaceAll("'", "''")}'`;

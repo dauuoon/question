@@ -24,6 +24,18 @@ const questionSchema = z.object({
     original_answer:z.string(),refined_answer:z.string().nullable(),
     refinement_used:z.boolean(),current_answer_version:z.enum(["original","refined"]),updated_at:answerRevisionSchema.nullable(),
   }).strict(),
+  followup_question:z.object({
+    id:z.uuid(),question_text:z.string().min(1),status:z.enum(["unprocessed","answered","skipped"]),
+    answer:z.object({
+      original_answer:z.string(),refined_answer:z.string().nullable(),refinement_used:z.boolean(),
+      current_answer_version:z.enum(["original","refined"]),updated_at:answerRevisionSchema.nullable(),
+    }).strict(),
+  }).strict().nullable().default(null),
+  last_followup_request:z.object({
+    request_id:z.uuid(),status:z.enum(["reserved","dispatch_started","generated","no_followup","failed","outcome_unknown"]),
+    answer_snapshot:z.string(),created_at:z.string(),prompt_version:z.string(),model_id:z.string().nullable(),
+    input_tokens:z.number().int().nonnegative().nullable(),output_tokens:z.number().int().nonnegative().nullable(),
+  }).strict().nullable().default(null),
 }).strict();
 const imageSchema = z.object({
   id: z.uuid(), sort_order: z.number().int().nonnegative(),
@@ -36,6 +48,8 @@ export const generationViewSchema = z.object({
   requested_question_count: questionCountSchema,
   failed_request_id: z.uuid().nullable(),
   answer_editable:z.boolean(),
+  followup_enabled:z.boolean().default(false),
+  readability_improved:z.boolean().default(false),
   question_actions:questionActionCapabilitiesSchema,
   questions: z.array(questionSchema).max(5),
   images: z.array(imageSchema).max(10),

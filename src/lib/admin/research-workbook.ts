@@ -40,6 +40,14 @@ const contextSchema = z.object({ id: z.uuid(), session_id: z.uuid(), context_id:
 const eventSchema = z.object({
   id: z.uuid(), session_id: z.uuid(), question_id: z.uuid().nullable(), event_type: z.string(), created_at: z.string(),
 });
+const followupRequestSchema = z.object({
+  id:z.uuid(),session_id:z.uuid(),participant_id:z.uuid(),request_id:z.uuid(),
+  root_question_id:z.uuid(),parent_question_id:z.uuid(),expected_answer_updated_at:z.string(),
+  answer_hash:z.string(),answer_snapshot:z.string(),status:z.string(),result_question_id:z.uuid().nullable(),
+  prompt_version:z.string(),model_id:z.string().nullable(),failure_code:z.string().nullable(),
+  input_tokens:z.number().nullable(),output_tokens:z.number().nullable(),
+  created_at:z.string(),dispatched_at:z.string().nullable(),finished_at:z.string().nullable(),
+});
 
 export function excelText(value: unknown): string | number | boolean {
   if (value === null || value === undefined) return "";
@@ -150,17 +158,23 @@ export async function writeResearchWorkbook(client: SupabaseClient, selection: R
       const briefingsSheet = sheet("Briefings", ["session_id", "participant_code", "record_kind", "revision",
         "briefing_text", "model_id", "prompt_version", "schema_version", "saved_at_Asia_Seoul"]);
       const eventsSheet = sheet("QuestionEvents", ["session_id", "participant_code", "question_id", "event_type", "created_at_Asia_Seoul"]);
+      const followupsSheet = sheet("FollowupRequests", ["session_id","participant_code","request_id","root_question_id",
+        "parent_question_id","answer_snapshot","answer_hash","status","result_question_id","prompt_version","model_id",
+        "failure_code","input_tokens","output_tokens","requested_at_Asia_Seoul","dispatched_at_Asia_Seoul","finished_at_Asia_Seoul"]);
       for (let start = 0; start < sessions.length; start += 100) {
         const batch = sessions.slice(start, start + 100);
         const ids = batch.map(s => s.id), byId = new Map(batch.map(s => [s.id, s]));
         const scoped = { column: "session_id", values: ids };
-        const [contexts, questions, sources, versions, diaries, events] = await Promise.all([
+        const [contexts, questions, sources, versions, diaries, events, followupRequests] = await Promise.all([
           readResearchRows(client, "session_contexts", "id,session_id,context_id", contextSchema, scoped),
           readResearchRows(client, "questions", "id,session_id,slot_index,question_text,status,question_kind,content_principle,detail_type,root_question_id,parent_question_id,regeneration_index,followup_index,is_active_version,skip_reason,generated_at", questionSchema, scoped),
           readResearchRows(client, "session_briefing_sources", "session_id,source_text,model_id,prompt_version,schema_version,generated_at", sourceSchema, scoped),
           readResearchRows(client, "session_briefing_versions", "id,session_id,revision,briefing_text,edited_at", versionSchema, scoped),
           readResearchRows(client, "diaries", "id,session_id,participant_id,status,experience_choices_json,feeling_choices_json,free_text,submitted_at", diarySchema, scoped),
           readResearchRows(client, "question_events", "id,session_id,question_id,event_type,created_at", eventSchema, scoped),
+          readResearchRows(client,"question_followup_requests",
+            "id,session_id,participant_id,request_id,root_question_id,parent_question_id,expected_answer_updated_at,answer_hash,answer_snapshot,status,result_question_id,prompt_version,model_id,failure_code,input_tokens,output_tokens,created_at,dispatched_at,finished_at",
+            followupRequestSchema,scoped),
         ]);
         const code = (id: string) => {
           const session = byId.get(id);
@@ -200,6 +214,13 @@ export async function writeResearchWorkbook(client: SupabaseClient, selection: R
         for (const diary of diaries) addDiary(diary);
         for (const event of events) add(eventsSheet, [event.session_id, code(event.session_id),
           event.question_id, event.event_type, researchDateTime(event.created_at)]);
+        for(const request of followupRequests) add(followupsSheet,[
+          request.session_id,participantCode(request.participant_id),request.request_id,request.root_question_id,
+          request.parent_question_id,request.answer_snapshot,request.answer_hash,request.status,
+          request.result_question_id,request.prompt_version,request.model_id,request.failure_code,
+          request.input_tokens,request.output_tokens,researchDateTime(request.created_at),
+          researchDateTime(request.dispatched_at),researchDateTime(request.finished_at),
+        ]);
       }
     }
     if (outputError) throw new ResearchDataError("EXPORT-FILE-WRITE");

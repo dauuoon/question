@@ -22,7 +22,7 @@ export default async function AdminSessionPage({
   if (sessionError) throw new Error("Unable to load this session.");
   if (!session) notFound();
   const [profileResult, contextResult, questionResult, eventResult,
-    sourceResult, versionResult, diaryResult, requestResult] = await Promise.all([
+    sourceResult, versionResult, diaryResult, requestResult, followupResult] = await Promise.all([
     supabase.from("profiles").select("participant_code,status,role,account_type").eq("id", session.participant_id).maybeSingle(),
     supabase.from("session_contexts").select("context_id").eq("session_id", sessionId).order("context_id"),
     supabase.from("questions")
@@ -39,9 +39,12 @@ export default async function AdminSessionPage({
       .eq("session_id", sessionId).maybeSingle(),
     supabase.from("session_briefing_requests")
       .select("attempt_number,state,failure_code,created_at,finished_at").eq("session_id", sessionId).order("attempt_number"),
+    supabase.from("question_followup_requests")
+      .select("request_id,root_question_id,parent_question_id,answer_snapshot,status,result_question_id,prompt_version,model_id,failure_code,input_tokens,output_tokens,created_at,dispatched_at,finished_at")
+      .eq("session_id",sessionId).order("created_at"),
   ]);
   if ([profileResult, contextResult, questionResult, eventResult, sourceResult,
-    versionResult, diaryResult, requestResult].some(result => result.error)) {
+    versionResult, diaryResult, requestResult, followupResult].some(result => result.error)) {
     throw new Error("Unable to load read-only session research details.");
   }
   const questionIds = (questionResult.data ?? []).map(question => question.id);
@@ -77,8 +80,8 @@ export default async function AdminSessionPage({
         {(questionResult.data ?? []).map(question => {
           const answer = answerByQuestion.get(question.id);
           return <article className="summary-card content-stack" key={question.id}>
-            <h3>슬롯 {question.slot_index} · {question.question_kind}
-              {!question.is_active_version ? " · 이전 버전" : ""}</h3>
+            <h3>슬롯 {question.slot_index} · {question.question_kind === "followup" ? "후속 질문" : question.question_kind}
+              {question.question_kind !== "followup" && !question.is_active_version ? " · 이전 버전" : ""}</h3>
             <p>{question.question_text}</p>
             <p>상태: {question.status}{question.status === "skipped" ? ` · 건너뛰기: ${question.skip_reason ?? "사유 없음"}` : ""}</p>
             <p>출처: {question.model_id} · prompt {question.prompt_version} · framework {question.framework_version}</p>
@@ -100,6 +103,16 @@ export default async function AdminSessionPage({
             {event.event_data ? ` · ${JSON.stringify(event.event_data)}` : ""}
           </li>)}</ol>
         </details> : null}
+        {(followupResult.data??[]).length?<details>
+          <summary>후속 질문 생성 기록</summary>
+          <ol>{(followupResult.data??[]).map(request=><li key={request.request_id}>
+            <p>{request.status} · 요청 {request.created_at} · 완료 {request.finished_at??"진행/미완료"}</p>
+            <p>원본 질문 {request.root_question_id} · 기준 질문 {request.parent_question_id} · 후속 질문 {request.result_question_id??"없음"}</p>
+            <p>Prompt {request.prompt_version} · 모델 {request.model_id??"미호출"} · 토큰 {request.input_tokens??"—"}/{request.output_tokens??"—"}
+              {request.failure_code?` · 오류 ${request.failure_code}`:""}</p>
+            <p className="preserve-whitespace">판단 입력 답변: {request.answer_snapshot}</p>
+          </li>)}</ol>
+        </details>:null}
       </section>
       <article className="summary-card content-stack">
         <h2 className="card-title">디자인 브리핑</h2>

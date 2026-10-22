@@ -10,6 +10,8 @@ import { AnswerAutosave, type AnswerDraft, type AnswerSaveStatus, type AnswerVer
 import { answerSaveErrorMessages } from "@/lib/answers/contract";
 import { sentenceRefinementErrorMessages,sentenceRefinementResultSchema,SENTENCE_REFINEMENT_REQUEST_MS } from "@/lib/ai/sentence-refinement-contract";
 import { questionActionRequestSchema,questionActionMessages } from "@/lib/question-generation/actions-contract";
+import { generationViewSchema } from "@/lib/question-generation/view-contract";
+import { questionFollowupErrorMessages } from "@/lib/ai/question-followup-contract";
 import {readRegenerationResult,waitForRegeneration,regenerationErrorMessage} from "@/lib/question-generation/regeneration-controller";
 import { DiaryPanel } from "./diary-panel";
 import { canShowBriefing, questionSessionStatus } from "@/lib/session-completion/display-state";
@@ -147,7 +149,10 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   const [imageId,setImageId]=useState(()=>current&&isWholeImageQuestion(current)?
     result.images[0]?.id??"":current?.targets[0]?.image_id??result.images[0]?.id??"");
   const [answers,setAnswers]=useState<Record<string,AnswerDraft>>(()=>
-    Object.fromEntries(questions.map(question=>[question.id,{...question.answer}])));
+    Object.fromEntries(questions.flatMap(question=>[
+      [question.id,{...question.answer}],
+      ...(question.followup_question?[[question.followup_question.id,{...question.followup_question.answer}] as const]:[]),
+    ])));
   const answersRef=useRef(answers);
   answersRef.current=answers;
   const [saveStatus,setSaveStatus]=useState<Record<string,AnswerSaveStatus>>(()=>
@@ -157,6 +162,12 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   const [saveErrors,setSaveErrors]=useState<Record<string,string|undefined>>({});
   const [naturalRatios,setNaturalRatios]=useState<Record<string,number>>({});
   const [questionAction,setQuestionAction]=useState<"skip"|"regenerate"|null>(null);
+  const [followupBusy,setFollowupBusy]=useState(false);
+  const [followupRequestIds,setFollowupRequestIds]=useState<Record<string,string>>({});
+  const followupRequestId=current?followupRequestIds[current.id]??null:null;
+  const followupBusyRef=useRef(false);
+  const followupRequestRef=useRef<Record<string,string>>({});
+  const [followupNotice,setFollowupNotice]=useState("");
   const [actionNotice,setActionNotice]=useState(initialNotice);
   const sessionFinished=sessionStatus!=="in_progress";
   const [activeTab,setActiveTab]=useState<"summary"|"question">(()=>
@@ -211,7 +222,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   const shownImage=imageMap.get(imageId)??result.images[0];
   const activeImageId=shownImage?.id??"";
   const shownRatio=shownImage?(imageRatio(shownImage)??naturalRatios[shownImage.id]??1):1;
-  const navigationLocked=navigationBusy||refiningQuestion!==null||questionAction!==null;
+  const navigationLocked=navigationBusy||refiningQuestion!==null||questionAction!==null||followupBusy;
   const answerWritable=result.answer_editable&&!sessionFinished&&current?.status!=="skipped";
   const hasWrittenAnswer=!!currentAnswer&&!!(currentAnswer.original_answer.trim()||currentAnswer.refined_answer?.trim());
   const apiCapabilities=result.question_actions.regeneration;
@@ -219,6 +230,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
     result.question_actions.reserve_count;
   const regenerationUnavailableMessage=!result.question_actions.ready?questionActionMessages["QA-UNAVAILABLE"]:
     !result.answer_editable?questionActionMessages["QA-STATE"]:
+      current?.followup_question?"후속 질문이 생성되어 질문을 바꾸거나 건너뛸 수 없습니다.":
       hasWrittenAnswer?"작성한 답변이 있는 질문은 건너뛰거나 바꿀 수 없습니다.":
         current?.regeneration_index!==undefined&&current.regeneration_index>=2?questionActionMessages["QA-LIMIT"]:
           reserveCount===0&&!apiCapabilities?.ready?questionActionMessages["QA-RESERVE"]:
@@ -296,6 +308,10 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
         if(activeQuestion)notifyRefinement(activeQuestion,"문장 다듬기가 끝난 뒤 이동해주세요.",true);
         return;
       }
+      if(followupBusyRef.current) {
+        setFollowupNotice("후속 질문 생성 결과를 확인한 뒤 이동해주세요.");
+        return;
+      }
       if(navigationBusyRef.current||completionBusyRef.current)return;
       if(briefingEditing&&briefingDraft!==briefing?.current) {
         setBriefingDirtyNotice("저장하지 않은 브리핑 수정이 있어요. 먼저 저장하거나 취소해주세요.");
@@ -317,6 +333,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
 
   async function applyQuestionAction(action:"skip"|"regenerate",retry=false) {
     if(!current||sessionFinished||actionBusyRef.current||refiningQuestionRef.current||navigationBusyRef.current||
+      followupBusyRef.current||current.followup_question||
       (!retry&&(!result.question_actions.ready||!result.answer_editable||hasWrittenAnswer)))return;
     actionBusyRef.current=true;setQuestionAction(action);setActionNotice("");setActionRetry(false);
     try {
@@ -397,11 +414,12 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
     if(navigationLocked || navigationBusyRef.current || actionBusyRef.current || actionRequestRef.current ||
       briefingEditing&&briefingDraft!==briefing?.current || !questions[index] || !current)return;
     navigationBusyRef.current=true;setNavigationBusy(true);
-    const saved=await autosave.current?.flush(current.id);
+    const saved=await flushCurrentAnswers();
     if(saved) {
       const next=questions[index];
       setBubble(null);
       setQuestionIndex(index);
+      if(index!==questionIndex)setFollowupNotice("");
       setActiveTab("question");
       setImageId(isWholeImageQuestion(next)?result.images[0]?.id??"":image??(next.targets.some(target=>target.image_id===activeImageId)?
         activeImageId:next.targets[0]?.image_id??""));
@@ -412,9 +430,16 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   async function selectImage(id:string) {
     if(navigationLocked || navigationBusyRef.current || actionBusyRef.current || actionRequestRef.current || !current)return;
     navigationBusyRef.current=true;setNavigationBusy(true);
-    const saved=await autosave.current?.flush(current.id);
+    const saved=await flushCurrentAnswers();
     if(saved){setBubble(null);setImageId(id);}
     navigationBusyRef.current=false;setNavigationBusy(false);
+  }
+  async function flushCurrentAnswers() {
+    if(!current)return true;
+    const saved=await autosave.current?.flush(current.id);
+    const childSaved=current.followup_question?
+      await autosave.current?.flush(current.followup_question.id):true;
+    return !!saved&&!!childSaved;
   }
   function saveCompletionRequest(request:CompletionRequest,state:CompletionUIState) {
     completionRequestRef.current=request;
@@ -646,6 +671,78 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
     setBriefingLoading(false);
   }
 
+  async function generateFollowup(recover=false) {
+    if(!result.followup_enabled||!current||!answerWritable||sessionFinished||followupBusyRef.current||navigationBusyRef.current||
+      refiningQuestionRef.current||actionBusyRef.current||current.followup_question)return;
+    const prior=current.last_followup_request;
+    if(!recover&&prior?.status==="no_followup"&&prior.answer_snapshot===answerText)return;
+    if(!recover&&prior?.status==="outcome_unknown"&&prior.answer_snapshot===answerText)return;
+    followupBusyRef.current=true;setFollowupBusy(true);setFollowupNotice("");
+    try {
+      if(!recover) {
+        const saved=await autosave.current?.flush(current.id);
+        if(!saved) {
+          setFollowupNotice("답변을 먼저 저장해주세요. 입력한 내용은 유지되어 있어요.");
+          return;
+        }
+      }
+      const snapshot=autosave.current?.getAnswer(current.id);
+      const source=snapshot?.current_answer_version==="refined"?
+        snapshot.refined_answer??"":snapshot?.original_answer??"";
+      if(!snapshot?.updated_at||!source.trim()) {
+        setFollowupNotice("먼저 답변을 작성하고 저장해주세요.");
+        return;
+      }
+      const requestId=recover?(followupRequestRef.current[current.id]??followupRequestId??
+        (pendingFollowup?current.last_followup_request?.request_id??null:null)):crypto.randomUUID();
+      if(!requestId)throw new Error("Follow-up request identity missing");
+      rememberFollowupRequest(current.id,requestId);
+      const response=await fetch(recover?`/api/question-followup?request_id=${encodeURIComponent(requestId)}`:
+        "/api/question-followup",{
+          method:recover?"GET":"POST",
+          ...(recover?{}:{headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({question_id:current.id,request_id:requestId,expected_updated_at:snapshot.updated_at})}),
+          cache:"no-store",
+        });
+      const body=await response.json();
+      if(response.status===202) {
+        setFollowupNotice("후속 질문 생성 결과를 확인하고 있어요. 같은 요청으로 다시 확인할 수 있습니다.");
+        return;
+      }
+      if(!response.ok) {
+        const code=typeof body.errorCode==="string"?body.errorCode:"FOLLOWUP-DB";
+        setFollowupNotice(questionFollowupErrorMessages[code]??questionFollowupErrorMessages["FOLLOWUP-DB"]);
+        if(["FOLLOWUP-UNKNOWN","FOLLOWUP-TIMEOUT","FOLLOWUP-ALREADY","FOLLOWUP-DUPLICATE",
+          "FOLLOWUP-API","FOLLOWUP-OUTPUT","FOLLOWUP-RATE","FOLLOWUP-CONFIG"].includes(code)) {
+          rememberFollowupRequest(current.id,null);
+        }
+        return;
+      }
+      const parsed=z.object({
+        outcome:z.enum(["generated","no_followup","failed","outcome_unknown"]),view:generationViewSchema,
+        activity_recorded:z.boolean(),
+      }).strict().safeParse(body);
+      if(!parsed.success||parsed.data.view.session_id!==result.session_id)throw new Error("Invalid follow-up result");
+      rememberFollowupRequest(current.id,null);
+      setFollowupNotice(parsed.data.outcome==="no_followup"?
+        "현재 답변에서 추가로 탐색할 질문이 없습니다.":
+          parsed.data.outcome==="failed"?questionFollowupErrorMessages["FOLLOWUP-API"]:
+            parsed.data.outcome==="outcome_unknown"?questionFollowupErrorMessages["FOLLOWUP-UNKNOWN"]:"");
+      onResult(parsed.data.view,current.slot_index,parsed.data.activity_recorded,false);
+    } catch {
+      setFollowupNotice("후속 질문 요청 결과를 확인할 수 없습니다. 같은 요청으로 결과를 확인해주세요.");
+    } finally {
+      followupBusyRef.current=false;setFollowupBusy(false);
+    }
+    function rememberFollowupRequest(questionId:string,requestId:string|null) {
+      const next={...followupRequestRef.current};
+      if(requestId)next[questionId]=requestId;
+      else delete next[questionId];
+      followupRequestRef.current=next;
+      setFollowupRequestIds(next);
+    }
+  }
+
   async function selectSummary() {
     if(briefingEditing&&briefingDraft!==briefing?.current) {
       setBriefingDirtyNotice("저장하지 않은 수정이 있어요. 먼저 저장하거나 취소해주세요.");
@@ -653,7 +750,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
     }
     if(navigationLocked||navigationBusyRef.current||!canShowBriefing(sessionStatus))return;
     navigationBusyRef.current=true;setNavigationBusy(true);
-    const saved=current?await autosave.current?.flush(current.id):true;
+    const saved=await flushCurrentAnswers();
     if(saved)setActiveTab("summary");
     navigationBusyRef.current=false;setNavigationBusy(false);
   }
@@ -673,7 +770,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   }
   async function refineCurrentAnswer() {
     if(!current || !currentAnswer || !answerWritable || actionBusyRef.current || actionRequestRef.current || refiningQuestionRef.current ||
-      navigationBusyRef.current || !answerText.trim())return;
+      navigationBusyRef.current || followupBusyRef.current || current.followup_question || !answerText.trim())return;
     const questionId=current.id;
     const controller=new AbortController();
     refinementAbortRef.current=controller;
@@ -720,13 +817,13 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
     }
   }
   async function restoreOriginal() {
-    if(!current || refiningQuestionRef.current || navigationBusyRef.current || actionBusyRef.current || actionRequestRef.current)return;
+    if(!current || current.followup_question || followupBusyRef.current || refiningQuestionRef.current || navigationBusyRef.current || actionBusyRef.current || actionRequestRef.current)return;
     autosave.current?.selectVersion(current.id,"original");
     notifyRefinement(current.id,"원문으로 되돌렸어요.");
     await autosave.current?.flush(current.id);
   }
   async function showRefined() {
-    if(!current || refiningQuestionRef.current || navigationBusyRef.current || actionBusyRef.current || actionRequestRef.current)return;
+    if(!current || current.followup_question || followupBusyRef.current || refiningQuestionRef.current || navigationBusyRef.current || actionBusyRef.current || actionRequestRef.current)return;
     autosave.current?.selectVersion(current.id,"refined");
     notifyRefinement(current.id,"다듬은 문장을 다시 표시했어요.");
     await autosave.current?.flush(current.id);
@@ -737,6 +834,19 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   const wholeImageQuestions=questions.filter(isWholeImageQuestion);
   const status=current?saveStatus[current.id]??"저장됨":"저장됨";
   const refinedAvailable=!!currentAnswer?.refinement_used && currentAnswer.refined_answer!==null;
+  const followupAnswer=current?.followup_question?
+    answers[current.followup_question.id]??current.followup_question.answer:null;
+  const followupAnswerText=followupAnswer?
+    followupAnswer.current_answer_version==="refined"?
+      followupAnswer.refined_answer??"":followupAnswer.original_answer:"";
+  const repeatNoFollowup=current?.last_followup_request?.status==="no_followup"&&
+    current.last_followup_request.answer_snapshot===answerText;
+  const repeatUnknownFollowup=current?.last_followup_request?.status==="outcome_unknown"&&
+    current.last_followup_request.answer_snapshot===answerText;
+  const parentAnswerLocked=!!current?.followup_question;
+  const pendingFollowup=current?.last_followup_request&&
+    ["reserved","dispatch_started"].includes(current.last_followup_request.status)&&
+    current.last_followup_request.answer_snapshot===answerText;
   const actionToastMessage=actionNotice;
   useEffect(()=>{
     const frame=imageFrameRef.current;
@@ -764,7 +874,8 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   }
 
   return <>
-  <section className="content-stack question-result" aria-labelledby="question-result-title" inert={completionOverlay}>
+  <section className={`content-stack question-result${result.readability_improved?" question-readability":""}`}
+    aria-labelledby="question-result-title" inert={completionOverlay}>
     <header className="question-result-heading">
       <p className="eyebrow">Reflection · 성찰</p>
       <h1 className="page-title" id="question-result-title">생각을 돌아보는 질문</h1>
@@ -917,7 +1028,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
               title={regenerationUnavailableMessage||undefined}
               aria-busy={questionAction==="regenerate"}
               aria-disabled={!!regenerationUnavailableMessage||navigationLocked}
-              disabled={navigationLocked||sessionFinished}
+              disabled={navigationLocked||sessionFinished||!!current.followup_question}
               onClick={()=>{
                 if(regenerationUnavailableMessage) {
                   setActionNotice(regenerationUnavailableMessage);
@@ -931,7 +1042,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
             <button type="button" className="question-text-action" aria-label="현재 질문 건너뛰기"
               aria-busy={questionAction==="skip"}
               disabled={sessionFinished||!result.question_actions.ready||!result.answer_editable||hasWrittenAnswer||
-                current.status==="skipped"||navigationLocked}
+                current.status==="skipped"||navigationLocked||!!current.followup_question}
               onClick={()=>void applyQuestionAction("skip")}>
               <span aria-hidden="true">↪</span> {questionAction==="skip"?
                 <LoadingState variant="button">질문을 건너뛰는 중…</LoadingState>:"질문 건너뛰기"}
@@ -950,22 +1061,45 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
                 className={segment.changed?"question-answer-diff-changed":undefined}>{segment.text}</span>)}
             </div>:null}
             <textarea id="question-answer-text"
-              className={`question-answer-textarea${answerDiffSegments?" has-answer-diff":""}`}
+              className={`question-answer-textarea${answerDiffSegments?" has-answer-diff":""}${parentAnswerLocked?" is-followup-locked":""}`}
               aria-label="나의 생각"
               placeholder={current.status==="skipped"?
                 "건너뛴 질문이며 답변을 입력할 수 없습니다.":
                 "질문을 보고 떠오른 답변을 자유롭게 적어보세요."}
-              value={answerText} disabled={!answerWritable || navigationLocked}
+              value={answerText}
+              readOnly={parentAnswerLocked}
+              disabled={(!answerWritable&&!parentAnswerLocked)||navigationLocked}
               maxLength={20_000}
               onScroll={event=>{
                 if(answerDiffRef.current)answerDiffRef.current.scrollTop=event.currentTarget.scrollTop;
               }}
-              onChange={event=>autosave.current?.change(current.id,event.target.value)} />
+              onChange={event=>{
+                if(!parentAnswerLocked&&!followupBusyRef.current)autosave.current?.change(current.id,event.target.value);
+              }} />
           </div>
+          {parentAnswerLocked?<p className="question-followup-lock-note" role="status">
+            후속 질문이 생성되어 답변을 수정할 수 없습니다.
+          </p>:null}
+          {current.followup_question?<section className="question-followup" aria-label="후속 질문">
+            <p className="question-followup-label"><span aria-hidden="true">↳</span> 후속 질문</p>
+            <p className="question-followup-text">{current.followup_question.question_text}</p>
+            <textarea id="question-followup-answer-text"
+              className="question-answer-textarea question-followup-answer"
+              aria-label="후속 질문에 대한 나의 생각"
+              placeholder="후속 질문에 대한 답변을 자유롭게 적어보세요."
+              value={followupAnswerText}
+              disabled={!result.answer_editable||sessionFinished||navigationLocked}
+              maxLength={20_000}
+              onChange={event=>autosave.current?.change(current.followup_question!.id,event.target.value)} />
+            <p className="question-answer-save-status" role="status" aria-live="polite">
+              {saveStatus[current.followup_question.id]==="저장됨"?"":saveStatus[current.followup_question.id]}
+              {saveStatus[current.followup_question.id]==="저장 실패"?" · 입력한 내용은 유지되어 있어요.":""}
+            </p>
+          </section>:null}
           </div>
             <div className="question-answer-actions">
               <div className="question-answer-statuses">
-                {refinedAvailable && answerWritable?
+                {refinedAvailable && answerWritable && !parentAnswerLocked?
                   currentAnswer.current_answer_version==="refined"?
                     <button type="button" className="text-link question-answer-version-button"
                       disabled={navigationLocked} onClick={()=>void restoreOriginal()}>
@@ -994,14 +1128,35 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
               <div className="question-answer-tools">
                 <button type="button" className="question-text-action question-refine-button"
                   aria-busy={refiningQuestion===current.id}
-                  disabled={!answerWritable || !answerText.trim() || navigationLocked}
+                  disabled={!answerWritable || !answerText.trim() || navigationLocked||parentAnswerLocked}
                   onClick={()=>void refineCurrentAnswer()}>
                   <span className="question-refine-icon" aria-hidden="true">✦</span>
                   <span className="question-refine-label">
                     {refiningQuestion===current.id?"문장을 정리하고 있어요...":"문장다듬기"}
                   </span>
                 </button>
+                {result.followup_enabled?<button type="button" className="question-text-action question-refine-button question-followup-button"
+                  aria-busy={followupBusy}
+                  disabled={!answerWritable||!answerText.trim()||navigationLocked||parentAnswerLocked||
+                    repeatNoFollowup||repeatUnknownFollowup}
+                  onClick={()=>void generateFollowup(!!followupRequestId||!!pendingFollowup)}>
+                  <span aria-hidden="true">↳</span>
+                  <span className="question-refine-label">
+                    {followupBusy?"후속 질문을 만들고 있어요...":
+                      followupRequestId||pendingFollowup?"같은 요청 결과 확인":"후속 질문 생성"}
+                  </span>
+                </button>:null}
               </div>
+              {repeatNoFollowup||followupNotice==="현재 답변에서 추가로 탐색할 질문이 없습니다."?
+                <Toast message="현재 답변에서 추가로 탐색할 질문이 없습니다." error={false} />:
+              followupNotice||repeatUnknownFollowup||current.last_followup_request?.status==="outcome_unknown"||
+                current.last_followup_request?.status==="failed"?
+                <p className={`question-followup-notice${["outcome_unknown","failed"].includes(
+                  current.last_followup_request?.status??"")?" is-error":""}`}
+                  role={["outcome_unknown","failed"].includes(current.last_followup_request?.status??"")?"alert":"status"}>
+                  {followupNotice|| (current.last_followup_request?.status==="failed"?questionFollowupErrorMessages["FOLLOWUP-API"]:
+                      questionFollowupErrorMessages["FOLLOWUP-UNKNOWN"])}
+                </p>:null}
             </div>
           </>}
         </>:null}
@@ -1013,7 +1168,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
       {sessionStatus==="summary_ready"&&!completionMessage?
         <p className="question-result-readonly">세션 완료를 준비 중입니다. 질문과 답변은 보존되어 있으며 완료 요청의 결과를 확인해주세요.</p>:null}
       {completionMessage?
-        <div className={`completion-status${completionState==="failed"?" is-error":""}`}
+        <div className={`completion-status${completionState==="failed"?" is-error":""}${completionState==="unknown"||completionState==="pending"?" is-recovery":""}`}
           role={completionState==="failed"||completionState==="unknown"?"alert":"status"} aria-live="polite">
         {completionState==="checking"||completionState==="loading"?
           <LoadingState>{completionMessage}</LoadingState>:<p>{completionMessage}</p>}

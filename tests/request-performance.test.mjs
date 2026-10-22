@@ -107,10 +107,15 @@ function client(latency = 0, invalid = {}) {
   const respond = async (name, data) => { calls.push(name); if (latency) await delay(latency); return { data, error: null }; };
   return { calls,
     from(table) {
-      const query = { select() { return this; }, eq() { return this; }, in() { return this; },
+      let followups=false;
+      const data=()=>table==="questions"&&followups?[]:rows[table];
+      const query = { select() { return this; }, eq(key,value) {
+        if(table==="questions"&&key==="question_kind"&&value==="followup")followups=true;
+        return this;
+      }, in() { return this; },
         order() { return this; }, limit() { return this; },
         maybeSingle() { return respond(table, rows[table]); },
-        then(resolve, reject) { return respond(table, rows[table]).then(resolve, reject); },
+        then(resolve, reject) { return respond(table, data()).then(resolve, reject); },
       }; return query;
     },
     rpc() { return respond("capabilities", { ready: false, reserve_count: 0, reserve_count_by_question: { [question]: 0 } }); },
@@ -131,7 +136,7 @@ function baseline() {
   return m.exports.readGenerationView;
 }
 
-test("same synthetic network latency benchmark preserves result and reduces completed-entry calls/critical path", async t => {
+test("same synthetic latency preserves the view and session-read optimization with an explicit follow-up lookup", async t => {
   const before = baseline();
   const after = typescriptLoader()("src/lib/question-generation/read.ts").readGenerationView;
   const measurements = { before: [], after: [] };
@@ -146,13 +151,15 @@ test("same synthetic network latency benchmark preserves result and reduces comp
     const saved = await newClient.from("sessions").select().maybeSingle();
     const optimized = await after(newClient, user, session, saved.data);
     measurements.after.push(performance.now() - started);
-    assert.deepEqual(optimized, original);
-    assert.equal(oldClient.calls.length, 9); assert.equal(newClient.calls.length, 8);
+    assert.deepEqual(optimized, {...original,readability_improved:true});
+    assert.equal(oldClient.calls.length, 9); assert.equal(newClient.calls.length, 9);
     assert.equal(newClient.calls.filter(c => c === "sessions").length, 1);
+    assert.equal(newClient.calls.filter(c => c === "questions").length, 2);
+    assert.equal(newClient.calls.includes("question_followup_requests"),false);
   }
   const mean = list => list.reduce((a, b) => a + b, 0) / list.length;
   t.diagnostic(JSON.stringify({ environment: "offline synthetic 15ms per request, 5 paired samples",
-    beforeRequests: 9, afterRequests: 8, beforeMeanMs: mean(measurements.before),
+    beforeRequests: 9, afterRequests: 9, beforeMeanMs: mean(measurements.before),
     afterMeanMs: mean(measurements.after) }));
 });
 

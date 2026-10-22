@@ -6,6 +6,7 @@
     "test:question-ui": "node --test tests/question-generation-ui.test.mjs",
     "test:question-server": "node --test tests/question-generation-server.test.mjs",
     "test:question-db": "node --test tests/question-generation-db.test.mjs",
+    "test:question-followup": "node --test tests/question-followup-api.test.mjs && node --experimental-strip-types --test tests/question-followup-db.test.mjs",
     "test:session-completion": "node --test tests/session-completion-db.test.mjs tests/session-briefing-server.test.mjs",
     "test:diary": "node --test tests/diary.test.mjs",
     "test:question-concurrency": "PG_TEST_ENABLED=1 node --test tests/question-generation-concurrency.test.mjs",

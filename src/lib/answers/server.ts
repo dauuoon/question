@@ -49,6 +49,13 @@ export async function requireEditableQuestion(
     .abortSignal(signal).maybeSingle();
   if(session.error) throw new AnswerError("ANSWER-DB");
   if(!session.data) throw new AnswerError("ANSWER-AUTH",403);
+  if(parsedQuestion.data.question_kind!=="followup") {
+    const followup=await caller.from("questions").select("id")
+      .eq("parent_question_id",parsedQuestion.data.id).eq("question_kind","followup")
+      .abortSignal(signal).limit(1);
+    if(followup.error) throw new AnswerError("ANSWER-DB");
+    if(followup.data.length) throw new AnswerError("ANSWER-LOCKED",409);
+  }
   if(session.data.status!=="in_progress" || parsedQuestion.data.status==="skipped" ||
     (!parsedQuestion.data.is_active_version && parsedQuestion.data.question_kind!=="followup")) {
     throw new AnswerError("ANSWER-STATE",409);

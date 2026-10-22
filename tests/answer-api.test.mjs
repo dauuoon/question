@@ -85,6 +85,44 @@ function routeLoader({current=answer(),saveResult,editable=true,participant=true
   return {load,calls};
 }
 
+test("the answer API enforces a stored follow-up lock without consulting feature configuration",async()=>{
+  const owner="10000000-0000-4000-8000-000000000001";
+  let writes=0;
+  const caller={
+    auth:{getUser:async()=>({data:{user:{id:owner}},error:null})},
+    from(table){
+      let columns;
+      const query={
+        select(value){columns=value;return query;},
+        eq(){return query;},abortSignal(){return query;},limit(){return query;},
+        update(){writes++;return query;},insert(){writes++;return query;},
+        maybeSingle:async()=>({error:null,data:table==="profiles"?
+          {role:"participant",status:"active"}:table==="sessions"?{status:"in_progress"}:{
+            id:questionId,session_id:"20000000-0000-4000-8000-000000000001",status:"answered",
+            question_kind:"original",is_active_version:true,
+          }}),
+        then(resolve){
+          assert.equal(table,"questions");
+          assert.equal(columns,"id");
+          return Promise.resolve({data:[{id:"60000000-0000-4000-8000-000000000001"}],error:null}).then(resolve);
+        },
+      };
+      return query;
+    },
+  };
+  const {POST}=loader({
+    "@/lib/supabase/server":{createSupabaseServerClient:async()=>caller},
+    "@/lib/activity/record":{recordParticipantActivity:async()=>{throw new Error("No activity write expected");}},
+  })("src/app/api/question-answer/route.ts");
+  const result=await POST(response("/api/question-answer",{
+    question_id:questionId,answer_text:"TEST forbidden edit",answer_version:"original",
+    expected_updated_at:answer().updated_at,
+  }));
+  assert.equal(result.status,409);
+  assert.equal((await result.json()).errorCode,"ANSWER-LOCKED");
+  assert.equal(writes,0);
+});
+
 test("answer save validates origin, strict input, participant ownership and compare-and-set revision",async()=>{
   const {load,calls}=routeLoader();
   const {POST}=load("src/app/api/question-answer/route.ts");
@@ -198,7 +236,10 @@ test("answer access helpers require an active participant, editable owned sessio
         const query={
           select(){return query;},eq(...value){filters.push(value);return query;},
           abortSignal(){return query;},
-          maybeSingle:async()=>({data:table==="profiles"?profile:table==="questions"?question:session,error:null}),
+          limit(){return query;},
+          maybeSingle:async()=>({data:table==="profiles"?profile:table==="questions"?
+            filters.some(([column])=>column==="parent_question_id")?null:question:session,error:null}),
+          then(resolve){return Promise.resolve({data:[],error:null}).then(resolve);},
         };
         return query;
       },

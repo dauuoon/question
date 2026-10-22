@@ -75,15 +75,17 @@ function client(data, role="admin", active=true) {
     },
     auth:{ getUser:async()=>({data:{user:{id:id(2)}},error:null}) },
     from(table) {
-      let rows=[...(data[table]??[])],columns="",head=false,count=false;
+      let rows=[...(data[table]??[])],columns="",head=false,count=false,range;
       const q={
         select(c,options={}){columns=c;head=!!options.head;count=options.count==="exact";queries.push({table,columns:c,head});return this;},
         order(){return this;},
         eq(c,v){rows=rows.filter(r=>r[c]===v);return this;},
         in(c,v){rows=rows.filter(r=>v.includes(r[c]));return this;},
-        range(a,b){rows=rows.slice(a,b+1);return this;},
-        maybeSingle:async()=>({data:{role,status:active?"active":"deactivated"},error:null}),
-        then(resolve,reject){return Promise.resolve({data:head?null:rows.map(r=>
+        range(a,b){range=[a,b];return this;},
+        maybeSingle:async()=>({data:columns==="role,status"?{role,status:active?"active":"deactivated"}:
+          rows.length===1?Object.fromEntries(columns.split(",").map(k=>[k,rows[0][k]])):null,error:null}),
+        then(resolve,reject){const selected=range?rows.slice(range[0],range[1]+1):rows;
+          return Promise.resolve({data:head?null:selected.map(r=>
           Object.fromEntries(columns.split(",").map(k=>[k,r[k]]))),count:count?rows.length:null,error:null}).then(resolve,reject);},
       };
       return q;
@@ -195,7 +197,7 @@ test("xlsx roundtrip retains Korean, lineage, all briefing revisions, JSON multi
   await writeResearchWorkbook(db,{kind:"sessions"},file);
   assert.ok((await stat(file)).size>0);
   const book=new ExcelJS.Workbook();await book.xlsx.readFile(file);
-  assert.deepEqual(new Set(book.worksheets.map(s=>s.name)),new Set(["Sessions","Questions","Answers","Briefings","Diaries","QuestionEvents"]));
+  assert.deepEqual(new Set(book.worksheets.map(s=>s.name)),new Set(["Sessions","Questions","Answers","Briefings","Diaries","QuestionEvents","FollowupRequests"]));
   const q=book.getWorksheet("Questions");
   assert.equal(q.rowCount,3);
   assert.equal(q.getCell("E2").type,ExcelJS.ValueType.String);
@@ -208,7 +210,102 @@ test("xlsx roundtrip retains Korean, lineage, all briefing revisions, JSON multi
   assert.equal(book.getWorksheet("Briefings").rowCount,4);
   assert.deepEqual(JSON.parse(book.getWorksheet("Diaries").getCell("E2").value),["생각 정리","다른 관점"]);
   assert.equal(book.getWorksheet("Diaries").getCell("G2").type,ExcelJS.ValueType.String);
-  for(const query of db.queries)assert.doesNotMatch(query.columns,/email|password|token|api_key|storage_path/);
+  for(const query of db.queries)assert.doesNotMatch(query.columns.split(",")
+    .filter(column=>!["input_tokens","output_tokens"].includes(column)).join(","),
+  /email|password|token|api_key|storage_path/);
+});
+
+test("follow-up exports retain lineage, child answers and decision provenance without including T accounts",async t=>{
+  const directory=await mkdtemp(new URL("./.admin-research-",import.meta.url).pathname);
+  t.after(()=>rm(directory,{recursive:true,force:true}));
+  const data=fixture();
+  data.questions.push({...data.questions[1],id:id(30),question_kind:"followup",parent_question_id:id(6),
+    followup_index:1,regeneration_index:null,is_active_version:false,question_text:"후속 판단 근거는 무엇인가요?"});
+  data.answers.push({...data.answers[0],id:id(31),question_id:id(30),original_answer:"후속 답변",
+    refined_answer:null,current_answer_version:"original"});
+  const request={
+    id:id(32),session_id:id(3),participant_id:id(1),request_id:id(33),
+    root_question_id:id(5),parent_question_id:id(6),expected_answer_updated_at:time,
+    answer_hash:"a".repeat(64),answer_snapshot:"+정제본",status:"generated",result_question_id:id(30),
+    prompt_version:"question-followup-v1.0",model_id:"offline-model",failure_code:null,
+    input_tokens:123,output_tokens:45,created_at:time,dispatched_at:time,finished_at:time,
+  };
+  data.question_followup_requests=[request,{...request,id:id(34),request_id:id(35),status:"no_followup",result_question_id:null}];
+  data.profiles.push({id:id(40),role:"participant",account_type:"T",participant_code:"T01"});
+  data.sessions.push({...data.sessions[0],id:id(41),participant_id:id(40)});
+  data.question_followup_requests.push({...request,id:id(42),request_id:id(43),
+    session_id:id(41),participant_id:id(40),answer_snapshot:"TEST-EXCLUDED"});
+  const {writeResearchWorkbook}=loader()("src/lib/admin/research-workbook.ts");
+  const file=join(directory,"followups.xlsx");
+  await writeResearchWorkbook(client(data),{kind:"sessions"},file);
+  const book=new ExcelJS.Workbook();await book.xlsx.readFile(file);
+  const requests=book.getWorksheet("FollowupRequests");
+  assert.equal(requests.rowCount,3);
+  assert.equal(requests.getCell("D2").value,id(5));
+  assert.equal(requests.getCell("E2").value,id(6));
+  assert.equal(requests.getCell("H2").value,"generated");
+  assert.equal(requests.getCell("I2").value,id(30));
+  assert.equal(requests.getCell("J2").value,"question-followup-v1.0");
+  assert.equal(requests.getCell("M2").value,123);
+  assert.equal(requests.getCell("N2").value,45);
+  assert.equal(requests.getCell("H3").value,"no_followup");
+  assert.equal(book.getWorksheet("Questions").getCell("G4").value,"followup");
+  assert.equal(book.getWorksheet("Questions").getCell("K4").value,id(6));
+  assert.equal(book.getWorksheet("Answers").getCell("E3").value,"후속 답변");
+  for(const sheet of book.worksheets)for(const row of sheet.getSheetValues()) {
+    assert.doesNotMatch(JSON.stringify(row)??"",/TEST-EXCLUDED|T01/);
+  }
+  const history=Array.from({length:1001},(_,index)=>({...request,id:id(100+index),request_id:id(2000+index),
+    status:"no_followup",result_question_id:null,answer_snapshot:`Historical answer ${index}`,
+    answer_hash:index.toString(16).padStart(64,"0")}));
+  data.question_followup_requests.push(...history);
+  const original=JSON.stringify(data);
+  const historyFile=join(directory,"all-followup-history.xlsx");
+  await writeResearchWorkbook(client(data),{kind:"sessions"},historyFile);
+  const historyBook=new ExcelJS.Workbook();await historyBook.xlsx.readFile(historyFile);
+  const historySheet=historyBook.getWorksheet("FollowupRequests");
+  assert.equal(historySheet.rowCount,1004);
+  assert.deepEqual(historySheet.getRow(1).values,requests.getRow(1).values);
+  const exported=new Set(historySheet.getColumn("C").values);
+  for(const record of history)assert.ok(exported.has(record.request_id),record.request_id);
+  assert.equal(JSON.stringify(data),original);
+  await assert.rejects(writeResearchWorkbook(client(data),{kind:"session",id:id(41)},
+    join(directory,"test-excluded.xlsx")),/EXPORT-RESEARCH-ONLY/);
+});
+
+test("admin session detail renders T01 follow-up decisions and child answers without offering research export",async()=>{
+  const data=fixture();
+  data.profiles[0].account_type="T";data.profiles[0].participant_code="T01";
+  data.questions.push({...data.questions[1],id:id(30),question_kind:"followup",parent_question_id:id(6),
+    followup_index:1,regeneration_index:null,is_active_version:false,question_text:"합성 후속 질문"});
+  data.answers.push({...data.answers[0],id:id(31),question_id:id(30),original_answer:"합성 후속 답변",
+    refined_answer:null,current_answer_version:"original"});
+  data.question_followup_requests=[{
+    request_id:id(32),session_id:id(3),root_question_id:id(5),parent_question_id:id(6),
+    answer_snapshot:"합성 판단 입력",status:"generated",result_question_id:id(30),
+    prompt_version:"question-followup-v1.0",model_id:"offline-model",failure_code:null,
+    input_tokens:123,output_tokens:45,created_at:time,dispatched_at:time,finished_at:time,
+  }];
+  data.session_briefing_requests=[];
+  const page=loader({
+    "@/lib/auth/role":{requireRole:async role=>{assert.equal(role,"admin");return {supabase:client(data)};}},
+    "../../research-download":{ResearchDownload:()=>{throw new Error("T accounts cannot export");}},
+    "next/link":{__esModule:true,default:"a"},
+  })("src/app/(admin)/admin/sessions/[sessionId]/page.tsx").default;
+  const html=renderToStaticMarkup(await page({params:Promise.resolve({sessionId:id(3)})}));
+  for(const value of ["T01","합성 후속 질문","합성 후속 답변","합성 판단 입력","후속 질문 생성 기록",
+    "question-followup-v1.0","123","45","이 세션은 연구용 Excel에서 제외됩니다"])assert.ok(html.includes(value),value);
+  const headings=[...html.matchAll(/<h3>(.*?)<\/h3>/g)].map(match=>match[1]);
+  assert.ok(headings.includes("슬롯 1 · 후속 질문"));
+  assert.ok(headings.includes("슬롯 1 · original · 이전 버전"));
+  assert.ok(headings.includes("슬롯 1 · regenerated"));
+  assert.ok(headings.every(heading=>!heading.includes("후속 질문")||!heading.includes("이전 버전")));
+  assert.ok(headings.every(heading=>!heading.includes("regenerated")||!heading.includes("이전 버전")));
+
+  data.questions[1].is_active_version=false;
+  const historicalHtml=renderToStaticMarkup(await page({params:Promise.resolve({sessionId:id(3)})}));
+  assert.ok(historicalHtml.includes("<h3>슬롯 1 · regenerated · 이전 버전</h3>"));
+  assert.ok(historicalHtml.includes("<h3>슬롯 1 · 후속 질문</h3>"));
 });
 test("all diary and participant/session exports respect selection and unknown records",async(t)=>{
   const directory=await mkdtemp(new URL("./.admin-research-",import.meta.url).pathname);

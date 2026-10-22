@@ -426,6 +426,7 @@ Production variables are:
 | `OPENAI_SENTENCE_REFINEMENT_ENABLED`, `OPENAI_SENTENCE_REFINEMENT_MODEL` | Independent optional sentence-refinement provider |
 | `OPENAI_QUESTION_GENERATION_MODEL` | Required for live initial questions; no separate enable flag |
 | `OPENAI_QUESTION_REGENERATION_ENABLED`, `OPENAI_QUESTION_REGENERATION_MODEL` | Enable only after migration and provider approval |
+| `OPENAI_QUESTION_FOLLOWUP_ENABLED`, `OPENAI_QUESTION_FOLLOWUP_MODEL` | Independent follow-up provider; keep disabled until migration and provider approval |
 | `SESSION_IMAGE_DELETION_ENABLED` | Independent flag; check pending deletion recovery before changing |
 | `OPENAI_SESSION_BRIEFING_ENABLED`, `OPENAI_SESSION_BRIEFING_MODEL` | Live briefing enable flag and approved model; disabled/empty in example |
 | `SESSION_BRIEFING_MOCK_ENABLED=false` | TEST Mock must remain disabled in Production |
@@ -1737,12 +1738,76 @@ five-candidate generation and frozen Context Draft/Refinement prompts are unchan
 This phase permits local implementation and mock/disposable PostgreSQL validation
 only. The additive migration has **not** been applied to TEST or Production.
 No live model invocation or remote research-data mutation is authorized here.
-Before deployment, separately approve the TEST migration, verify catalog/RLS/data
-integrity, then approve mock browser, single-call live validation and browser E2E.
-Keep the feature off until those gates pass.
+Before deploying the regeneration phase, separately approve its TEST migration,
+verify catalog/RLS/data integrity, then approve mock browser, single-call live
+validation and browser E2E. Keep that feature off until those gates pass.
 
-The newly written migrations must be applied in this order, **only after separate
-approval**:
+## Response-based follow-up questions
+
+Follow-up questions use the separate `question-followup-v1.0` prompt and API.
+Only a participant's explicit button click can start one provider call. Each
+original question can have one generated follow-up; `no_followup` is deduplicated
+by the saved answer content, while a changed answer can be checked again. The
+original answer becomes read-only only after a follow-up is stored. Follow-up
+answers are independent and remain optional for session completion.
+
+### Active-participant access (local implementation; deployment pending)
+
+New follow-up requests are fail-closed. The server requires
+`OPENAI_QUESTION_FOLLOWUP_ENABLED=true`, an authenticated active profile with role
+`participant`, and ownership of the session/question or saved request.
+P and T accounts are eligible; participant code, UUID allowlists and account
+classification are not authorization boundaries. The temporary T01 restriction
+has been removed. Legacy `OPENAI_QUESTION_FOLLOWUP_ALLOWED_USER_IDS` values are
+ignored and are no longer needed. Anonymous, inactive and administrator callers
+cannot generate or recover follow-up requests. Both POST generation and GET
+recovery enforce these checks before accessing a trusted write client.
+
+The saved view carries server-derived generation and readability capabilities.
+All active participants receive the same question-result UI; the button still
+requires the feature flag and an editable, answered question.
+Question-result typography uses the system font stack instead of the globally preferred
+locally installed Pretendard. Browser platform-font inspection found that the
+local Pretendard installation selected `Pretendard-Thin` at CSS weights 400/500.
+Answer text, refinement diffs, and placeholders use weight 400. This avoids
+masking the font matching issue with a heavier answer weight; no font is downloaded.
+Follow-up inputs have a white background and an accessible name
+without a visible answer label.
+Readability is scoped to `.question-result.question-readability`, not other
+participant or administrator screens, and does not require enabling AI calls.
+Existing stored follow-up questions and answer locks are still
+restored when new generation is disabled; ordinary sessions without follow-ups
+do not query the new request table while the feature is disabled.
+
+Result restoration fetches at most one request for each active parent (at most
+five parallel queries), filtered by session, participant and parent, ordered by
+`created_at DESC, id DESC`, with `LIMIT 1`. This avoids whole-history reads and
+the former 100-row validation ceiling, including histories exceeding the hosted
+default row limit or dominated by a single parent. Other parents' latest states
+are never displaced by that history. All historical rows remain stored and
+untouched, and paginated Excel export still reads them; this is not a generation quota.
+
+The optional `OPENAI_QUESTION_FOLLOWUP_MODEL` overrides the model; otherwise the
+existing `OPENAI_QUESTION_GENERATION_MODEL` is reused. This fallback never enables
+calls by itself. Configuring access does not apply the migration: approve and
+verify the database rollout before enabling requests. Local automatic tests use
+mocked AI, disposable PGlite and an isolated PostgreSQL 17 cluster, without
+modifying project environment files or calling live providers.
+
+The additive migration is
+`supabase/migrations/20261012230000_question_followups.sql`. The operator has
+applied it to the shared project through SQL Editor; read-only postflight
+confirmed the new objects and unchanged preexisting research records. Do not
+reapply it. Local T01 testing has confirmed generation, answer locks, child answer
+save/restore, no-follow-up notices and briefing generation. Production environment
+changes, general availability and deployment remain separately approval-gated.
+The model request does not resend images; follow-up quality may be
+limited when interpreting the answer requires visual detail. Request outcomes,
+prompt/model identifiers and available token counts are retained for research
+review and included in the admin session detail and workbook export.
+
+For a new database, the migrations must be applied in this order, **only after
+separate approval**:
 
 1. [20261010001500_question_regeneration.sql](./supabase/migrations/20261010001500_question_regeneration.sql):
    request/attempt/candidate/event ledgers, private snapshots, guards, capabilities
@@ -1751,6 +1816,66 @@ approval**:
    immutable private dispatch provenance and the server's metadata-bearing dispatch
    overload. Model/prompt/schema/screening version are recorded atomically with
    authorization, including requests that later fail or become outcome-unknown.
+3. [20261012230000_question_followups.sql](./supabase/migrations/20261012230000_question_followups.sql):
+   follow-up request history, answer and question locks, conflicting-action guards,
+   and single-dispatch/result persistence RPCs.
+
+### Follow-up stability validation
+
+The 16-file offline/native regression selection passed 266 tests with no failures
+or skips. The isolated PostgreSQL concurrency suite includes independent-connection
+follow-up admission replay, single dispatch and parent-edit rejection after
+generation. TypeScript, ESLint and a production build with process-only offline
+credentials passed. That build is a validation artifact, not a deployment build.
+
+Additional assertions cover skip/regeneration/refinement rejection on locked
+parents, one successful child per root, rejection of child-of-child generation,
+and actual completion/briefing/diary-prompt RPCs with an unanswered optional child.
+Admin detail rendering includes T01 child answers and generation provenance.
+Workbook roundtrips retain P-account child lineage, answers, outcomes and token
+counts in `Questions`, `Answers` and `FollowupRequests`; T accounts remain
+intentionally excluded from every research export. A 1,003-request P-account
+export verifies pagination across 500-row batches without dropping historical
+follow-up records or changing workbook columns.
+
+The general-access tests use real participant/ownership guards for P and T
+accounts, deny foreign-session/request access before trusted writes, and verify
+SQL RLS isolation of requests, child questions and child answers. A 1,504-row
+skewed-history fixture verifies per-parent latest-state restoration, saved child
+answers, bounded returned rows and explicit query errors.
+
+Question-result reads include one existing-questions-table lookup for saved
+children (nine calls in the disabled-feature synthetic fixture rather than the
+previous eight). When generation is enabled, profile eligibility and up to five
+latest-request reads are added. Production latency and hosted concurrent requests
+were not load-tested.
+Admin follow-up cards display `후속 질문` without the generic previous-version
+label. Inactive original/regenerated cards retain `이전 버전`; this display-only
+distinction does not change stored kinds, answers, generation history or exports.
+
+### General-access rollout and remaining approvals
+
+No DB schema change, data backfill or migration replay is needed for general
+participant access. The existing ownership RLS, service-role-only mutation RPCs,
+single-success/pending indexes, answer-hash deduplication and generated-parent
+locks remain unchanged. The existing briefing prompt/snapshot and diary flow
+remain unchanged; optional child answers are not added to briefing inputs.
+
+Only local code and offline tests are approved. Do not push, deploy, change
+Production variables or run live AI tests until separately authorized. Before an
+approved deployment, retain the matching server-only API key, Supabase settings
+and existing briefing settings, choose the approved follow-up model (or reuse
+`OPENAI_QUESTION_GENERATION_MODEL`), and set
+`OPENAI_QUESTION_FOLLOWUP_ENABLED=true` for active participants. Do not copy local
+environment files wholesale. Rebuild with approved environment values; the offline
+build must not be deployed. Turning the flag off stops new requests/recovery API
+access, but saved children, answers and parent locks remain visible and intact.
+
+No additional per-user/day, rate or spending limit was introduced. A successful
+child is limited to one per root, but changed answers after `no_followup` and
+definitive failures can cause further calls. Optional future controls include a
+per-user daily budget, short-window request throttling or an application-wide
+budget circuit breaker; these require separate policy and implementation approval.
 
 Database lifecycle names `completed`/`dispatch_unknown` are normalized by the
 repository into HTTP `committed`/`outcome_unknown`; snapshots remain server-private.
