@@ -244,10 +244,14 @@ test("failed recovery restores editing and unknown recovery suppresses an identi
   }
 });
 
-test("participant readability stays scoped to question results while other screen typography stays global",()=>{
+test("all screens use the regular-capable system font stack while answer-specific rules remain scoped",()=>{
   const css=readFileSync("src/app/globals.css","utf8");
-  assert.match(css,/body \{[^}]*-webkit-font-smoothing: antialiased;/);
-  assert.match(css,/\.question-readability \{[^}]*--font-family-base: -apple-system,[^}]*font-family:var\(--font-family-base\);[^}]*-webkit-font-smoothing:auto;/);
+  assert.match(css,/:root \{[^}]*--font-family-base: -apple-system, BlinkMacSystemFont, "Segoe UI",\s*"Apple SD Gothic Neo", "Malgun Gothic", sans-serif;/);
+  assert.match(css,/:root \{[^}]*--font-weight-regular: 400;[^}]*--font-weight-semibold: 600;[^}]*--font-weight-bold: 700;/);
+  assert.match(css,/body \{[^}]*font-family: var\(--font-family-base\);[^}]*font-weight: var\(--font-weight-regular\);[^}]*-webkit-font-smoothing: auto;/);
+  assert.match(css,/button,\s*input,\s*textarea,\s*select \{\s*font: inherit;/);
+  assert.doesNotMatch(css,/Pretendard|font-weight:\s*(?:100|200|300)\b/);
+  assert.match(css,/\.question-readability \{[^}]*font-family:var\(--font-family-base\);/);
   const resultFontRule=css.match(/\.question-readability \{[^}]*\}/)?.[0];
   assert.ok(resultFontRule);
   assert.doesNotMatch(resultFontRule,/Pretendard/);

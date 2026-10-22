@@ -1766,15 +1766,17 @@ recovery enforce these checks before accessing a trusted write client.
 The saved view carries server-derived generation and readability capabilities.
 All active participants receive the same question-result UI; the button still
 requires the feature flag and an editable, answered question.
-Question-result typography uses the system font stack instead of the globally preferred
-locally installed Pretendard. Browser platform-font inspection found that the
+All screens, including login, image upload and administrator views, use the
+system font stack instead of locally installed Pretendard. Browser platform-font inspection found that the
 local Pretendard installation selected `Pretendard-Thin` at CSS weights 400/500.
 Answer text, refinement diffs, and placeholders use weight 400. This avoids
 masking the font matching issue with a heavier answer weight; no font is downloaded.
 Follow-up inputs have a white background and an accessible name
 without a visible answer label.
-Readability is scoped to `.question-result.question-readability`, not other
-participant or administrator screens, and does not require enabling AI calls.
+The global body uses Regular 400 with normal browser font smoothing; existing
+Semibold 600 and Bold 700 emphasis is preserved. Form controls inherit the same
+font. Answer-specific colors and input styles remain scoped to
+`.question-result.question-readability` and do not require enabling AI calls.
 Existing stored follow-up questions and answer locks are still
 restored when new generation is disabled; ordinary sessions without follow-ups
 do not query the new request table while the feature is disabled.
