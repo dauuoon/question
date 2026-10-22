@@ -26,6 +26,7 @@ const finish = (f, requestId, text = "The design connects the user's goals with 
 
 async function apply(f) {
   await f.db.exec(readFileSync(new URL(`../supabase/migrations/${migration}`, import.meta.url), "utf8"));
+  await f.db.exec(readFileSync(new URL("../supabase/migrations/20261023000000_briefing_followup_snapshot.sql", import.meta.url), "utf8"));
 }
 
 test("completion validates active slots and selected answers before freezing the session", async () => {

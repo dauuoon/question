@@ -103,7 +103,7 @@ test("login click and native Enter submission show pending state and suppress du
   await act(async () => { waits[1].resolve(); await waits[1].promise; });
 });
 
-test("login theme controls open the 13-page image manual in an accessible modal", async t => {
+test("login theme controls open the 14-page image manual in an accessible modal", async t => {
   const { LoginTheme } = load("src/app/(auth)/login/login-theme.tsx");
   const { MANUAL_PAGE_PATHS } = load("src/lib/manual.ts");
   const ui = await withDom(t, React.createElement(LoginTheme, { initialTheme: "light" }, "login"));
@@ -116,8 +116,13 @@ test("login theme controls open the 13-page image manual in an accessible modal"
   assert.ok(dialog);
   assert.equal(dialog.querySelector("h2").textContent, "WHY BOX 사용자 매뉴얼");
   const pages = [...dialog.querySelectorAll(".manual-viewer-page")];
-  assert.equal(pages.length, 13);
+  assert.equal(pages.length, 14);
   assert.deepEqual(pages.map(page => page.getAttribute("src")), MANUAL_PAGE_PATHS);
+  assert.equal(MANUAL_PAGE_PATHS.at(-1), "/images/14.png");
+  for (const path of MANUAL_PAGE_PATHS) {
+    assert.deepEqual([...readFileSync(`public${path}`).subarray(0, 8)],
+      [137, 80, 78, 71, 13, 10, 26, 10]);
+  }
   assert.deepEqual(pages.map(page => page.alt), MANUAL_PAGE_PATHS.map((_, index) =>
     `사용자 매뉴얼 ${index + 1}페이지`));
   assert.equal(ui.dom.window.document.body.style.overflow, "hidden");

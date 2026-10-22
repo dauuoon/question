@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import {
-  pgliteFixture, owner, other, quote, auth, answerSQL, completeSQL, beginSQL as beginRegenerationSQL, read,
+  pgliteFixture, populate, owner, other, quote, auth, answerSQL, completeSQL, beginSQL as beginRegenerationSQL, read,
 } from "./question-regeneration-fixture.mjs";
 
 async function prepareAnsweredQuestion(f, question = f.questions[0], text = "I chose this direction because it supports the main interaction.") {
@@ -216,6 +216,7 @@ test("completion RPC and diary prompt remain valid with an unanswered optional f
   const f=await pgliteFixture(3);
   try {
     await f.exec(read("supabase/migrations/20261010003000_session_completion_briefing.sql"));
+    await f.exec(read("supabase/migrations/20261023000000_briefing_followup_snapshot.sql"));
     const {question,answer}=await prepareAnsweredQuestion(f);
     const request=await f.json(beginSQL(f,question,answer));
     await f.json(dispatchSQL(request.id));
@@ -227,6 +228,7 @@ test("completion RPC and diary prompt remain valid with an unanswered optional f
     assert.equal(begun.state,"ready");
     assert.equal(begun.input_snapshot.answered_questions.length,3);
     assert.ok(begun.input_snapshot.answered_questions.every(q=>q.question_id!==child.result_question_id));
+    assert.ok(begun.input_snapshot.answered_questions.every(q=>!("followup" in q)));
     assert.equal(await f.json(`${auth()} select public.authorize_session_briefing_dispatch(
       ${quote(f.session)},${quote(completionId)},${quote(owner)}) as result;`),true);
     await f.exec(`${auth()} select public.finish_session_briefing(
@@ -238,5 +240,126 @@ test("completion RPC and diary prompt remain valid with an unanswered optional f
       ${quote(f.session)}) as result;`),true);
     assert.equal(await f.json(`${auth("authenticated")} select public.claim_session_diary_prompt(
       ${quote(f.session)}) as result;`),false);
+  } finally {await f.close();}
+});
+
+test("snapshot migration requires the existing private function and never widens its ACL", async () => {
+  const f = await pgliteFixture();
+  try {
+    const migration = read("supabase/migrations/20261023000000_briefing_followup_snapshot.sql");
+    await f.db.exec("reset role;");
+    await assert.rejects(f.db.exec(migration), /Existing briefing snapshot function required/);
+    await f.db.exec("rollback;");
+    await f.exec(read("supabase/migrations/20261010003000_session_completion_briefing.sql"));
+    await f.exec("grant execute on function public.session_briefing_input_snapshot(uuid) to anon;");
+    await assert.rejects(f.db.exec(migration), /Expected private postgres-owned briefing snapshot function/);
+    await f.db.exec("rollback;");
+    await f.exec("revoke execute on function public.session_briefing_input_snapshot(uuid) from anon;");
+    await f.exec(migration);
+    assert.equal(await f.json(`select to_jsonb(has_function_privilege(
+      'anon','public.session_briefing_input_snapshot(uuid)','EXECUTE')) as result;`), false);
+  } finally { await f.close(); }
+});
+
+test("new snapshot nests answered children by exact parent and session, freezes selected versions and preserves retry input", async () => {
+  const f=await pgliteFixture(3);
+  try {
+    await f.exec(read("supabase/migrations/20261010003000_session_completion_briefing.sql"));
+    const children=[];
+    for(const question of f.questions){
+      await prepareAnsweredQuestion(f,question,`Original answer ${question.slot_index}`);
+      if(question.slot_index===1)await f.exec(`${auth("authenticated")} update public.answers
+        set refined_answer='Selected parent refinement',refinement_used=true,
+        current_answer_version='refined',refined_at=clock_timestamp()
+        where question_id=${quote(question.id)};`);
+      const answer=await f.json(`select jsonb_build_object('updated_at',updated_at,'text',
+        case when current_answer_version='refined' then refined_answer else original_answer end)
+        as result from public.answers where question_id=${quote(question.id)};`);
+      const request=await f.json(beginSQL(f,question,answer));
+      await f.json(dispatchSQL(request.id));
+      const generated=await f.json(finishSQL(request.id,"generated",`Child of slot ${question.slot_index}?`));
+      children.push(generated.result_question_id);
+    }
+    await f.exec(answerSQL({id:children[0]},"Original child reflection"));
+    await f.exec(`${auth("authenticated")} update public.answers set refined_answer='An alternative remains uncertain',
+      refinement_used=true,current_answer_version='refined',refined_at=clock_timestamp()
+      where question_id=${quote(children[0])};`);
+    await f.exec(answerSQL({id:children[1]},"Separate second child"));
+    const before=await f.json(`select public.session_briefing_input_snapshot(${quote(f.session)}) as result;`);
+    assert.ok(before.answered_questions.every(q=>!("followup" in q)));
+    const acl=await f.json(`select jsonb_build_object('owner',proowner,'acl',proacl,'config',proconfig) as result
+      from pg_proc where oid='public.session_briefing_input_snapshot(uuid)'::regprocedure;`);
+    await f.exec(read("supabase/migrations/20261023000000_briefing_followup_snapshot.sql"));
+    assert.deepEqual(await f.json(`select jsonb_build_object('owner',proowner,'acl',proacl,'config',proconfig) as result
+      from pg_proc where oid='public.session_briefing_input_snapshot(uuid)'::regprocedure;`),acl);
+    const snap=await f.json(`select public.session_briefing_input_snapshot(${quote(f.session)}) as result;`);
+    assert.equal(snap.answered_questions.length,3);
+    assert.equal(snap.answered_questions[0].answer.selected,"Selected parent refinement");
+    assert.deepEqual(snap.answered_questions[0].followup,{
+      session_id:f.session,question_id:children[0],parent_question_id:f.questions[0].id,
+      question_text:"Child of slot 1?",
+      answer:{original:"Original child reflection",refined:"An alternative remains uncertain",
+        current_version:"refined",selected:"An alternative remains uncertain"},
+    });
+    assert.equal(snap.answered_questions[1].followup.parent_question_id,f.questions[1].id);
+    assert.equal(snap.answered_questions[1].followup.answer.selected,"Separate second child");
+    assert.equal(snap.answered_questions[2].followup,undefined);
+    const foreign=await populate(f.exec,f.json,3);
+    const foreignAnswer=await prepareAnsweredQuestion({...f,...foreign});
+    const foreignRequest=await f.json(beginSQL(foreign,foreignAnswer.question,foreignAnswer.answer));
+    await f.json(dispatchSQL(foreignRequest.id));
+    const foreignChild=await f.json(finishSQL(foreignRequest.id,"generated","FOREIGN SESSION QUESTION"));
+    await f.exec(answerSQL({id:foreignChild.result_question_id},"FOREIGN SESSION ANSWER"));
+    assert.deepEqual(await f.json(`select public.session_briefing_input_snapshot(${quote(f.session)}) as result;`),snap);
+    await assert.rejects(f.json(`${auth("authenticated",other)} select public.begin_session_completion(
+      ${quote(f.session)},${quote(randomUUID())},null) as result;`),/Session ownership required/);
+    await f.exec(`${auth("authenticated")} update public.answers set original_answer=E' \\t\\n\\r '
+      where question_id=${quote(children[1])};`);
+    const blank=await f.json(`select public.session_briefing_input_snapshot(${quote(f.session)}) as result;`);
+    assert.equal(blank.answered_questions[1].followup,undefined);
+    const completionId=randomUUID();
+    const begun=await f.json(`${auth("authenticated")} select public.begin_session_completion(
+      ${quote(f.session)},${quote(completionId)},null) as result;`);
+    assert.deepEqual(begun.input_snapshot,blank);
+    await f.exec(`${auth()} select public.authorize_session_briefing_dispatch(
+      ${quote(f.session)},${quote(completionId)},${quote(owner)});
+      select public.fail_session_briefing(${quote(f.session)},${quote(completionId)},${quote(owner)},'LOCAL-FAIL',false);`);
+    const retried=await f.json(`${auth("authenticated")} select public.begin_session_completion(
+      ${quote(f.session)},${quote(randomUUID())},${quote(completionId)}) as result;`);
+    assert.deepEqual(retried.input_snapshot,begun.input_snapshot);
+    await assert.rejects(f.exec(`${auth()} update public.answers set original_answer='Too late'
+      where question_id=${quote(children[0])};`),/Answers are editable only while reflection is in progress/);
+  } finally {await f.close();}
+});
+
+test("migration leaves existing completed briefing and legacy failed-request snapshot unchanged",async()=>{
+  const f=await pgliteFixture(3);
+  try {
+    await f.exec(read("supabase/migrations/20261010003000_session_completion_briefing.sql"));
+    for(const q of f.questions)await f.exec(answerSQL(q));
+    const completionId=randomUUID();
+    const begun=await f.json(`${auth("authenticated")} select public.begin_session_completion(
+      ${quote(f.session)},${quote(completionId)},null) as result;`);
+    const before=await f.json(`select jsonb_agg(to_jsonb(r)) as result from public.session_briefing_requests r;`);
+    await f.exec(read("supabase/migrations/20261023000000_briefing_followup_snapshot.sql"));
+    assert.deepEqual(await f.json(`select jsonb_agg(to_jsonb(r)) as result from public.session_briefing_requests r;`),before);
+    await f.exec(`${auth()} select public.authorize_session_briefing_dispatch(
+      ${quote(f.session)},${quote(completionId)},${quote(owner)});
+      select public.fail_session_briefing(${quote(f.session)},${quote(completionId)},${quote(owner)},'LOCAL-FAIL',false);`);
+    const retryId=randomUUID();
+    const retry=await f.json(`${auth("authenticated")} select public.begin_session_completion(
+      ${quote(f.session)},${quote(retryId)},${quote(completionId)}) as result;`);
+    assert.deepEqual(retry.input_snapshot,begun.input_snapshot);
+    await f.exec(`${auth()} select public.authorize_session_briefing_dispatch(
+      ${quote(f.session)},${quote(retryId)},${quote(owner)});
+      select public.finish_session_briefing(${quote(f.session)},${quote(retryId)},${quote(owner)},
+      'Existing source','MOCK','session-design-briefing-v1.4','why_box_session_design_briefing_v1_0');`);
+    const stored=await f.json(`select jsonb_build_object('session',to_jsonb(s),
+      'sources',(select jsonb_agg(to_jsonb(b)) from public.session_briefing_sources b)) as result
+      from public.sessions s where s.id=${quote(f.session)};`);
+    await f.exec(read("supabase/migrations/20261023000000_briefing_followup_snapshot.sql"));
+    assert.deepEqual(await f.json(`select jsonb_build_object('session',to_jsonb(s),
+      'sources',(select jsonb_agg(to_jsonb(b)) from public.session_briefing_sources b)) as result
+      from public.sessions s where s.id=${quote(f.session)};`),stored);
   } finally {await f.close();}
 });

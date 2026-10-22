@@ -356,9 +356,11 @@ Vercel project, not the existing old `whybox` project.
   active answered slots with the final selected answer version. The provider
   checks that each selected answer matches its original/refined version, then
   sends only `participant_confirmed_context` and `final_answers`.
-- Session/participant/question UUIDs, question text, superseded answer versions,
-  skipped questions, images and prior AI drafts are not sent to OpenAI.
-- The separate [briefing prompt v1.4](./src/lib/ai/prompts/session-design-briefing-v1.4.ts)
+- Session/participant/question UUIDs, superseded answer versions, skipped questions,
+  images and prior AI drafts are not sent to OpenAI. With an answered follow-up,
+  its question and the parent question are sent only as exploratory context.
+- The separate [briefing prompt v1.5](./src/lib/ai/prompts/session-design-briefing-v1.5.ts)
+  retains the v1.4 rules and adds connected follow-up interpretation. It
   asks for natural first-person Korean prose from the designer's perspective,
   prohibits third-person participant summaries and invented intentions,
   judgments, facts or causal links, and preserves uncertainty/negation. It uses
@@ -1037,15 +1039,15 @@ The returned model ID and provider creation time are persisted as generation met
   unnecessary first-person openings and wish-based phrasing, and do not infer
   ongoing/completed review or a committed plan from selected interests.
   User-edited text and stored context remain untouched.
-- [Design briefing v1.4](./src/lib/ai/prompts/session-design-briefing-v1.4.ts)
-  builds on v1.3, adding client-facing professional style and faithful
-  reformulation of wishes. Work state must be explicitly supported by confirmed
-  context or a final selected answer. New briefing provenance records v1.4;
-  the v1.0 response schema and existing saved briefings remain unchanged.
+- [Design briefing v1.5](./src/lib/ai/prompts/session-design-briefing-v1.5.ts)
+  imports the unchanged v1.4 prompt, retaining client-facing professional style,
+  faithful reformulation of wishes and evidence-based work state. It adds
+  connected follow-up interpretation without treating later answers as definitive.
+  New briefing provenance records v1.5; the v1.0 response schema and existing
+  saved briefings remain unchanged.
 - The request builders and mocked SDK tests verify the active revisions.
-  Only active prompt versions are retained in the prompt directory; context and
-  briefing prompts are standalone files with no dependency on older versions.
-  Their resolved text is unchanged by this cleanup and verified by SHA-256 tests.
+  The context prompt remains standalone. The briefing keeps v1.4 as its immutable
+  base so its previous wording can be verified separately by SHA-256 tests.
   The separate one-question
   regeneration and sentence-refinement prompts are unchanged. No live model
   calls, remote data changes, migrations, push or deployment are required.
@@ -1860,8 +1862,9 @@ distinction does not change stored kinds, answers, generation history or exports
 No DB schema change, data backfill or migration replay is needed for general
 participant access. The existing ownership RLS, service-role-only mutation RPCs,
 single-success/pending indexes, answer-hash deduplication and generated-parent
-locks remain unchanged. The existing briefing prompt/snapshot and diary flow
-remain unchanged; optional child answers are not added to briefing inputs.
+locks remain unchanged. General-access rollout did not change the briefing
+snapshot or diary flow. The separately approval-gated briefing extension below
+adds answered children without changing completion requirements.
 
 Only local code and offline tests are approved. Do not push, deploy, change
 Production variables or run live AI tests until separately authorized. Before an
@@ -1878,6 +1881,61 @@ child is limited to one per root, but changed answers after `no_followup` and
 definitive failures can cause further calls. Optional future controls include a
 per-user daily budget, short-window request throttling or an application-wide
 budget circuit breaker; these require separate policy and implementation approval.
+
+### Connected follow-up briefing input (v1.5, local only)
+
+The new
+[20261023000000_briefing_followup_snapshot.sql](./supabase/migrations/20261023000000_briefing_followup_snapshot.sql)
+replaces only the private `session_briefing_input_snapshot(uuid)` function.
+It does not create tables, change columns, grants, RLS or completion conditions,
+or rewrite any existing snapshot, answer, session or briefing source.
+Existing migrations must not be edited or replayed.
+
+For each active answered original/regenerated question, the function optionally
+nests its answered child with the same session, exact `parent_question_id` and
+root, and an answer owned by the session participant. Both answers preserve
+original/refined/selected provenance. Missing, whitespace-only and unanswered
+children omit the `followup` key entirely, preserving the legacy input shape.
+The child never becomes a main slot or a completion requirement.
+
+The application accepts both legacy and nested snapshots. It validates child
+parent/session identity, unique question identities and selected answer versions.
+Only selected text is sent to AI; a nested `followup` contains `parent_question`,
+`question` and `answer`, without database/user identifiers. The v1.5 prompt
+treats questions as exploratory context rather than confirmed facts, integrates
+supported grounds/alternatives/conditions/reservations, and does not treat the
+later answer as a final conclusion or automatically overwrite its parent.
+The `briefing_text` response schema, source/revision storage, diary, administrator
+and Excel structures are unchanged. The mock provider also includes child answers.
+
+Rollout requires separate approval:
+
+1. Deploy the backward-compatible application while retaining the old DB function.
+   Verify v1.5 accepts legacy snapshots and the existing completion flow.
+2. In a low-traffic window, confirm the target project, backup and current private
+   function owner/ACL, then apply only the new function migration transaction.
+   The migration aborts if the existing private postgres-owned function is absent
+   or unexpectedly executable by public/application roles.
+   `CREATE OR REPLACE` retains existing ownership/ACL; do not grant new EXECUTE.
+   Lock/statement timeout failures must stop rollout, not trigger blind retries.
+3. Read-only postflight: verify the function definition, postgres owner,
+   `SECURITY DEFINER`, empty search path and unchanged private ACL, and unchanged
+   stored research rows. With separately approved T01 AI testing, verify a new
+   session's connected input and output. No automatic old-session regeneration.
+
+Use the application-first order because older strict input validators reject
+the nested key. Definitive-failure retries retain their original frozen snapshot,
+including legacy requests that have no child fields. Do not backfill them.
+After the SQL change, do not roll back to a pre-v1.5 application while nested
+snapshots exist; even restoring the old function cannot remove those stored
+fields. Prefer a compatible application fix or temporarily disable new briefing
+requests with an explicitly approved operational plan.
+
+The existing session lock serializes child saves against completion. Offline
+PostgreSQL tests exercise both orders: save-first includes the committed child;
+completion-first freezes the earlier snapshot and rejects a later save.
+No extra AI calls are introduced, but answered-child text increases input tokens.
+Semantic model quality still requires separately approved live testing.
 
 Database lifecycle names `completed`/`dispatch_unknown` are normalized by the
 repository into HTTP `committed`/`outcome_unknown`; snapshots remain server-private.

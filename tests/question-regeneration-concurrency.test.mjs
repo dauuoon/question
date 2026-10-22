@@ -11,7 +11,7 @@ import process from "node:process";
 import console from "node:console";
 import {
   initialize, populate, owner, quote, auth, beginSQL, dispatchSQL, stageSQL, commitSQL,
-  failSQL, recoverSQL, answerSQL, completeSQL, pinsSQL, targetsSQL, expireSQL,
+  failSQL, recoverSQL, answerSQL, completeSQL, pinsSQL, targetsSQL, expireSQL, read,
 } from "./question-regeneration-fixture.mjs";
 
 // No ambient PG/DATABASE/Supabase credentials, external hosts, or preexisting cluster are used.
@@ -268,6 +268,54 @@ test("fresh disposable loopback PostgreSQL 17: independent regeneration races an
         where root_question_id=${quote(q.id)} and status='generated';`),1);
       assert.equal(await json(`select to_jsonb(count(*)) from public.questions
         where parent_question_id=${quote(q.id)} and question_kind='followup';`),1);
+    });
+    await t.test("completion and child saves serialize into one immutable follow-up snapshot in both lock orders",async()=>{
+      await exec(read("supabase/migrations/20261010003000_session_completion_briefing.sql"));
+      await exec(read("supabase/migrations/20261023000000_briefing_followup_snapshot.sql"));
+      for(const existing of [false,true])for(const saveFirst of [true,false]){
+        const f=await fixture();const q=f.questions[0],text="Parent decision";
+        for(const question of f.questions)await exec(answerSQL(question,text));
+        await exec(`${auth()} update public.sessions set status='in_progress' where id=${quote(f.session)};`);
+        const reserved=await json(`${auth()} select public.begin_question_followup(
+          ${quote(f.session)},${quote(q.id)},${quote(randomUUID())},${quote(owner)},
+          (select updated_at from public.answers where question_id=${quote(q.id)}),
+          ${quote(createHash("sha256").update(text).digest("hex"))},${quote(text)},'question-followup-v1.0') as result;`);
+        await exec(`${auth()} select public.dispatch_question_followup(${quote(reserved.id)},'LOCAL-MOCK');`);
+        const generated=await json(`${auth()} select public.finish_question_followup(
+          ${quote(reserved.id)},'generated','What remains uncertain?','LOCAL-MOCK',120,24,null) as result;`);
+        const completionId=randomUUID();
+        const completion=`${auth("authenticated")} select public.begin_session_completion(
+          ${quote(f.session)},${quote(completionId)},null) as result;`;
+        if(existing)await exec(answerSQL({id:generated.result_question_id},"Previously saved child answer"));
+        const save=existing?`${auth("authenticated")} update public.answers
+          set original_answer='An untested alternative' where question_id=${quote(generated.result_question_id)};`:
+          answerSQL({id:generated.result_question_id},"An untested alternative");
+        if(saveFirst){
+          const {pending:saving}=await hold(save,"child_save_first");
+          const completing=run(completion,"completion_after_child");
+          await blocked(["completion_after_child"]);
+          assert.equal((await saving).ok,true);
+          const completed=await completing;
+          assert.equal(completed.ok,true,completed.err);
+          assert.equal(parsed(completed).at(-1).input_snapshot.answered_questions[0].followup.answer.selected,
+            "An untested alternative");
+        }else{
+          const {pending:completing}=await hold(completion,"completion_before_child");
+          const saving=run(save,"child_after_completion");
+          await blocked(["child_after_completion"]);
+          const completed=await completing;
+          assert.equal(completed.ok,true,completed.err);
+          const child=parsed(completed).at(-1).input_snapshot.answered_questions[0].followup;
+          if(existing)assert.equal(child.answer.selected,"Previously saved child answer");
+          else assert.equal(child,undefined);
+          await expectFailure(saving,/Answers are editable only while reflection is in progress/);
+        }
+        const frozen=await json(`select input_snapshot as result from public.session_briefing_requests
+          where session_id=${quote(f.session)} and request_id=${quote(completionId)};`);
+        const replay=await json(completion);
+        assert.deepEqual(replay.input_snapshot,frozen);
+        assert.equal(frozen.answered_questions.length,5);
+      }
     });
     console.log("VERIFIED fresh PostgreSQL 17 loopback cluster; no remote credentials or provider calls");
   } finally {

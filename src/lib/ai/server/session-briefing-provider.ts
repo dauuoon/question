@@ -9,7 +9,7 @@ import {
   briefingInputSchema,
   briefingResultSchema,
 } from "@/lib/session-completion/briefing-contract";
-import { SESSION_DESIGN_BRIEFING_PROMPT } from "@/lib/ai/prompts/session-design-briefing-v1.4";
+import { SESSION_DESIGN_BRIEFING_PROMPT } from "@/lib/ai/prompts/session-design-briefing-v1.5";
 import { SESSION_DESIGN_BRIEFING_SCHEMA } from "@/lib/ai/schemas/session-design-briefing-v1.0";
 import { SessionBriefingProviderError, type SessionBriefingProvider } from "./session-briefing-service";
 
@@ -36,6 +36,11 @@ export function sessionBriefingParameters(model: string, input: BriefingInput): 
       participant_confirmed_context: { ...snapshot.design_context, context_ids: snapshot.context_ids },
       final_answers: snapshot.answered_questions.map(question => ({
         slot_index: question.slot_index, answer: question.answer.selected,
+        ...(question.followup ? { followup: {
+          parent_question: question.question_text,
+          question: question.followup.question_text,
+          answer: question.followup.answer.selected,
+        } } : {}),
       })),
     }) }] }],
     text: { format: { type: "json_schema", ...SESSION_DESIGN_BRIEFING_SCHEMA } },
@@ -140,7 +145,10 @@ export function createMockSessionBriefingProvider(
 
       const context = input.design_context.additional_context?.trim();
       const contextSentence = context ? `제가 적은 작업 맥락은 “${context}”입니다.` : "";
-      const answerSentences = answers.map((answer) => `제 답변은 “${answer}”입니다.`);
+      const answerSentences = input.answered_questions.flatMap(question => [
+        `제 답변은 “${question.answer.selected.trim()}”입니다.`,
+        ...(question.followup ? [`제 후속 답변은 “${question.followup.answer.selected.trim()}”입니다.`] : []),
+      ]);
       return {
         response: {
           briefing_text: [contextSentence, ...answerSentences].filter(Boolean).join(" "),

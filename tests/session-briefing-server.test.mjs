@@ -10,6 +10,7 @@ import { fileURLToPath, URL } from "node:url";
 import ts from "typescript";
 
 const require = createRequire(import.meta.url);
+const { structuredClone } = globalThis;
 function load(path, mocks = {}) {
   const sourcePath = path.endsWith(".ts") ? path : `${path}.ts`;
   const url = new URL(`../${sourcePath}`, import.meta.url);
@@ -133,6 +134,54 @@ test("briefing input and response contracts retain selected answer provenance an
   assert.equal(contract.briefingRequestSchema.safeParse(requestRecord()).success, true);
 });
 
+test("nested follow-up inputs preserve selected versions and reject foreign or mismatched lineage",()=>{
+  const {sessionBriefingParameters}=load("src/lib/ai/server/session-briefing-provider.ts");
+  const followup={
+    session_id:sessionId,question_id:"50000000-0000-4000-8000-000000000002",
+    parent_question_id:questionId,question_text:"What alternative remains open?",
+    answer:{original:"Maybe a denser layout.",refined:"A denser layout remains an untested alternative.",
+      current_version:"refined",selected:"A denser layout remains an untested alternative."},
+  };
+  const nested=structuredClone(snapshot);
+  nested.answered_questions[0].followup=followup;
+  assert.equal(contract.briefingInputSchema.safeParse(nested).success,true);
+  const params=sessionBriefingParameters("mock-model",nested);
+  const payload=JSON.parse(params.input[0].content[0].text);
+  assert.deepEqual(payload.final_answers,[{
+    slot_index:1,answer:snapshot.answered_questions[0].answer.selected,
+    followup:{parent_question:snapshot.answered_questions[0].question_text,
+      question:followup.question_text,answer:followup.answer.selected},
+  }]);
+  assert.doesNotMatch(JSON.stringify(payload),/question_id|session_id|parent_question_id|Maybe a denser layout/);
+  assert.deepEqual(params.text.format.schema,SESSION_DESIGN_BRIEFING_SCHEMA.schema);
+  for(const change of [
+    {session_id:requestId},{parent_question_id:requestId},{question_id:questionId},
+    {answer:{...followup.answer,selected:followup.answer.original}},
+    {answer:{...followup.answer,selected:"  "}},
+  ]) {
+    const invalid=structuredClone(nested);
+    invalid.answered_questions[0].followup={...followup,...change};
+    assert.equal(contract.briefingInputSchema.safeParse(invalid).success,false);
+    assert.throws(()=>sessionBriefingParameters("mock",invalid),/BRIEFING-INPUT/);
+  }
+  const originalSelected=structuredClone(nested);
+  originalSelected.answered_questions[0].followup.answer.current_version="original";
+  originalSelected.answered_questions[0].followup.answer.selected=followup.answer.original;
+  assert.equal(JSON.parse(sessionBriefingParameters("mock",originalSelected).input[0].content[0].text)
+    .final_answers[0].followup.answer,followup.answer.original);
+  assert.deepEqual(contract.briefingInputSchema.parse(snapshot),snapshot);
+});
+
+test("v1.5 retains v1.4 verbatim and adds connected, non-authoritative follow-up interpretation only",()=>{
+  const old=load("src/lib/ai/prompts/session-design-briefing-v1.4.ts").SESSION_DESIGN_BRIEFING_PROMPT;
+  const next=load("src/lib/ai/prompts/session-design-briefing-v1.5.ts").SESSION_DESIGN_BRIEFING_PROMPT;
+  assert.ok(next.startsWith(old+"\n"));
+  for(const rule of [/one connected reflection/,/not a participant-confirmed fact/,
+    /not automatically a final conclusion/,/must not replace the original answer/,
+    /preserve unresolved differences/,/When no followup is supplied/,
+    /unchanged briefing_text JSON response schema/])assert.match(next,rule);
+});
+
 test("mock briefing provider is restricted to the explicit TEST project and never enriches supplied facts", async () => {
   const testEnv = {
     NODE_ENV: "development",
@@ -150,7 +199,7 @@ test("mock briefing provider is restricted to the explicit TEST project and neve
   assert.match(result.response.briefing_text, /제 답변은 “I wanted the interface to feel calm\.”입니다/u);
   assert.doesNotMatch(result.response.briefing_text, /사용자는|참여자는/u);
   assert.doesNotMatch(result.response.briefing_text, /focused decisions/u);
-  assert.match(contract.SESSION_BRIEFING_PROMPT_VERSION, /v1\.4$/);
+  assert.match(contract.SESSION_BRIEFING_PROMPT_VERSION, /v1\.5$/);
   const prompt = load("src/lib/ai/prompts/session-design-briefing-v1.4.ts").SESSION_DESIGN_BRIEFING_PROMPT;
   assert.match(prompt, /currently underway only when the confirmed context or a final answer says it is underway/u);
   assert.match(prompt, /Never convert a wish, possibility, or proposed next step/u);
@@ -259,7 +308,7 @@ test("completion POST rejects cross-origin requests before auth or repository wo
     assert.match(params.instructions,/first-person voice of the designer/i);
     assert.match(params.instructions,/Do not refer to the designer as "the participant" or "the user"/);
     assert.equal(params.instructions,
-      load("src/lib/ai/prompts/session-design-briefing-v1.4.ts").SESSION_DESIGN_BRIEFING_PROMPT);
+      load("src/lib/ai/prompts/session-design-briefing-v1.5.ts").SESSION_DESIGN_BRIEFING_PROMPT);
     assert.equal(params.store, false);
     assert.equal(params.stream, false);
     assert.equal(params.text.format.strict, true);
@@ -300,7 +349,7 @@ test("completion POST rejects cross-origin requests before auth or repository wo
     assert.equal(options.logLevel, "off");
     assert.equal(sent.model, "mock-model");
     assert.equal(sent.instructions, providerModule.sessionBriefingProvenance.prompt);
-    assert.equal(providerModule.sessionBriefingProvenance.prompt_version, "session-design-briefing-v1.4");
+    assert.equal(providerModule.sessionBriefingProvenance.prompt_version, "session-design-briefing-v1.5");
     assert.ok(requestOptions.signal instanceof globalThis.AbortSignal);
     const mock = providerModule.createSessionBriefingProvider({ ...env, NODE_ENV: "development" });
     assert.equal(mock.mode, "mock");
