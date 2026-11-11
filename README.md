@@ -360,7 +360,9 @@ Vercel project, not the existing old `whybox` project.
   images and prior AI drafts are not sent to OpenAI. With an answered follow-up,
   its question and the parent question are sent only as exploratory context.
 - The separate [briefing prompt v1.5](./src/lib/ai/prompts/session-design-briefing-v1.5.ts)
-  retains the v1.4 rules and adds connected follow-up interpretation. It
+  contains the consolidated v1.4 rules and adds connected follow-up interpretation. The
+  original v1.4 and v1.5 prompt text and revision history are preserved in the
+  [prompt archive](./src/lib/ai/prompts/archive/session-design-briefing-history.md). It
   asks for natural first-person Korean prose from the designer's perspective,
   prohibits third-person participant summaries and invented intentions,
   judgments, facts or causal links, and preserves uncertainty/negation. It uses
@@ -1040,14 +1042,15 @@ The returned model ID and provider creation time are persisted as generation met
   ongoing/completed review or a committed plan from selected interests.
   User-edited text and stored context remain untouched.
 - [Design briefing v1.5](./src/lib/ai/prompts/session-design-briefing-v1.5.ts)
-  imports the unchanged v1.4 prompt, retaining client-facing professional style,
+  is self-contained and keeps the previous client-facing professional style,
   faithful reformulation of wishes and evidence-based work state. It adds
   connected follow-up interpretation without treating later answers as definitive.
   New briefing provenance records v1.5; the v1.0 response schema and existing
   saved briefings remain unchanged.
 - The request builders and mocked SDK tests verify the active revisions.
-  The context prompt remains standalone. The briefing keeps v1.4 as its immutable
-  base so its previous wording can be verified separately by SHA-256 tests.
+  The context prompt remains standalone. The briefing prompt is hash-checked
+  after consolidation, while its original v1.4 text and revision history remain
+  in the archive.
   The separate one-question
   regeneration and sentence-refinement prompts are unchanged. No live model
   calls, remote data changes, migrations, push or deployment are required.

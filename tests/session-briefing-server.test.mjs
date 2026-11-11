@@ -172,14 +172,12 @@ test("nested follow-up inputs preserve selected versions and reject foreign or m
   assert.deepEqual(contract.briefingInputSchema.parse(snapshot),snapshot);
 });
 
-test("v1.5 retains v1.4 verbatim and adds connected, non-authoritative follow-up interpretation only",()=>{
-  const old=load("src/lib/ai/prompts/session-design-briefing-v1.4.ts").SESSION_DESIGN_BRIEFING_PROMPT;
-  const next=load("src/lib/ai/prompts/session-design-briefing-v1.5.ts").SESSION_DESIGN_BRIEFING_PROMPT;
-  assert.ok(next.startsWith(old+"\n"));
+test("v1.5 preserves the original rules and adds connected, non-authoritative follow-up interpretation only",()=>{
+  const prompt=load("src/lib/ai/prompts/session-design-briefing-v1.5.ts").SESSION_DESIGN_BRIEFING_PROMPT;
   for(const rule of [/one connected reflection/,/not a participant-confirmed fact/,
     /not automatically a final conclusion/,/must not replace the original answer/,
     /preserve unresolved differences/,/When no followup is supplied/,
-    /unchanged briefing_text JSON response schema/])assert.match(next,rule);
+    /unchanged briefing_text JSON response schema/])assert.match(prompt,rule);
 });
 
 test("mock briefing provider is restricted to the explicit TEST project and never enriches supplied facts", async () => {
@@ -200,17 +198,17 @@ test("mock briefing provider is restricted to the explicit TEST project and neve
   assert.doesNotMatch(result.response.briefing_text, /사용자는|참여자는/u);
   assert.doesNotMatch(result.response.briefing_text, /focused decisions/u);
   assert.match(contract.SESSION_BRIEFING_PROMPT_VERSION, /v1\.5$/);
-  const prompt = load("src/lib/ai/prompts/session-design-briefing-v1.4.ts").SESSION_DESIGN_BRIEFING_PROMPT;
+  const prompt = load("src/lib/ai/prompts/session-design-briefing-v1.5.ts").SESSION_DESIGN_BRIEFING_PROMPT;
   assert.match(prompt, /currently underway only when the confirmed context or a final answer says it is underway/u);
   assert.match(prompt, /Never convert a wish, possibility, or proposed next step/u);
   assert.match(prompt, /first-person voice of the designer/u);
   assert.equal(SESSION_DESIGN_BRIEFING_SCHEMA.name, contract.SESSION_BRIEFING_SCHEMA_VERSION);
 });
 
-test("briefing prose revision preserves grounding and work-state rules while adding client-facing style", () => {
-  const prompt = load("src/lib/ai/prompts/session-design-briefing-v1.4.ts").SESSION_DESIGN_BRIEFING_PROMPT;
+test("briefing prompt text and rules remain unchanged through consolidation", () => {
+  const prompt = load("src/lib/ai/prompts/session-design-briefing-v1.5.ts").SESSION_DESIGN_BRIEFING_PROMPT;
   assert.equal(createHash("sha256").update(prompt).digest("hex"),
-    "93f44c45b40e457e02332518836357fcfafec695b3ce33d0f98e07acb7116329");
+    "eefa9efbefb8cdb9249932c097358ea6c2f5bb8fcd3dfd3cadcbb5b36b107e2a");
   for (const rule of [
     /Address the client in the designer's own voice/u,
     /professional Korean prose with "~습니다" endings/u,
@@ -224,6 +222,20 @@ test("briefing prose revision preserves grounding and work-state rules while add
     /without claiming that work is underway or scheduled/u,
     /Never add a design decision, performed result, or improvement effect/u,
   ]) assert.match(prompt, rule);
+});
+
+test("briefing prompt archive retains the exact v1.4 original and version history", () => {
+  const archive = readFileSync(new URL("../src/lib/ai/prompts/archive/session-design-briefing-history.md", import.meta.url), "utf8");
+  const original = archive.match(/## v1\.4 original prompt\n\n```text\n([\s\S]*?)\n```/u)?.[1];
+  const effectiveV15 = archive.match(/## v1\.5 original effective prompt\n\n```text\n([\s\S]*?)\n```/u)?.[1];
+  assert.ok(original);
+  assert.ok(effectiveV15);
+  assert.equal(createHash("sha256").update(original).digest("hex"),
+    "93f44c45b40e457e02332518836357fcfafec695b3ce33d0f98e07acb7116329");
+  assert.equal(createHash("sha256").update(effectiveV15).digest("hex"),
+    "eefa9efbefb8cdb9249932c097358ea6c2f5bb8fcd3dfd3cadcbb5b36b107e2a");
+  assert.match(archive, /85c8e0071143d1dd7cb40809ae3f2e6c06d76a80/u);
+  assert.match(archive, /1a337e9bbc92c9b7ac7c3e1acd0baeff37fda742/u);
 });
 
 test("briefing HTTP helpers reject cross-origin requests and oversized or invalid JSON bodies", async () => {
