@@ -2760,7 +2760,11 @@ test("client POST deadline and failed GET preserve locked recovery with no autom
   const c=new GenerationController(view(),()=>true,s=>states.push(s),async(_session,_id,signal)=>{
     posts++;return new Promise((_resolve,reject)=>signal.addEventListener("abort",()=>reject(new Error("TEST transport timeout")),{once:true}));
   },async()=>{throw new Error("PRIVATE read error");});
-  c.attach();const first=c.start();t.mock.timers.tick(GENERATION_REQUEST_MS);await first;
+  c.attach();const first=c.start();
+  t.mock.timers.tick(60_000);
+  assert.equal(posts,1);assert.equal(states.at(-1).view.state,"running");
+  assert.equal(GENERATION_REQUEST_MS,150_000);
+  t.mock.timers.tick(GENERATION_REQUEST_MS-60_000);await first;
   assert.equal(posts,1);assert.equal(states.at(-1).view.state,"recovery");
   assert.doesNotMatch(states.at(-1).message,/PRIVATE/);
   await c.start();assert.equal(posts,1);c.detach();await settle();

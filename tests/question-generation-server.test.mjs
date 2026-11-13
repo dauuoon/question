@@ -222,7 +222,7 @@ test("Responses request uses revised prompt with unchanged schema, saved context
   assert.equal(result.model, "actual-model");
   assert.equal(sdkCalls.length, 1); assert.equal(sdkCalls[0].settings.maxRetries, 0);
   assert.equal(sdkCalls[0].params.instructions, activePrompt.QUESTION_GENERATION_PROMPT);
-  assert.equal(sdkCalls[0].settings.logLevel, "off"); assert.equal(sdkCalls[0].settings.timeout, 60000);
+  assert.equal(sdkCalls[0].settings.logLevel, "off"); assert.equal(sdkCalls[0].settings.timeout, 120_000);
   assert.equal(sdkCalls[0].options.signal, signal);
 });
 
@@ -615,4 +615,10 @@ test("route returns only IDs/state with no-store; timeout fails attempt; UI uses
   assert.equal(timeout.status, 504); assert.equal(repo.current.status, "failed");
   assert.match(read("src/app/(participant)/sessions/[sessionId]/session-wizard.tsx"),
     /disabled=\{!eligible\} onClick=\{\(\) => void controller\.current\?\.start\(\)\}>질문 생성하기<\/button>/);
+});
+
+test("generation server deadline leaves time for timeout recovery before function termination", () => {
+  assert.equal(config.QUESTION_GENERATION_TIMEOUT_MS, 120_000);
+  assert.equal(config.QUESTION_GENERATION_RECOVERY_MS, 8_000);
+  assert.match(read("src/app/api/question-generation/route.ts"), /export const maxDuration = 140;/);
 });

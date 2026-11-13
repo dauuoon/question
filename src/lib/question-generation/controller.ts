@@ -8,7 +8,7 @@ export type GenerationUI = {
 };
 export const GENERATION_POLL_MS = 5_000;
 export const GENERATION_MAX_READS = 12;
-export const GENERATION_REQUEST_MS = 90_000;
+export const GENERATION_REQUEST_MS = 150_000;
 export const recoveryMessage = "질문 생성 상태를 확인하고 있어요. 상태 확인으로 다시 확인해주세요. 계속되면 연구자에게 알려주세요.";
 export function generationMessage(code: QuestionGenerationErrorCode) {
   if (["QGEN-DB", "QGEN-STAGE", "QGEN-COMMIT", "QGEN-RECOVERY"].includes(code)) return recoveryMessage;

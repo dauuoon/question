@@ -1,7 +1,7 @@
 import "server-only";
 import { QuestionGenerationError } from "../question-generation-contract";
 
-export const QUESTION_GENERATION_TIMEOUT_MS = 60_000;
+export const QUESTION_GENERATION_TIMEOUT_MS = 120_000;
 export const QUESTION_GENERATION_RECOVERY_MS = 8_000;
 export const QUESTION_GENERATION_SIGNED_URL_SECONDS = 180;
 

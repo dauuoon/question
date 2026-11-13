@@ -11,7 +11,7 @@ import {
 import { readGenerationView } from "@/lib/question-generation/read";
 
 export const runtime = "nodejs";
-export const maxDuration = 80;
+export const maxDuration = 140;
 const headers = { "Cache-Control": "no-store" };
 
 export async function GET(request: NextRequest) {
