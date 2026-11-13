@@ -43,7 +43,8 @@ const eventSchema = z.object({
 const followupRequestSchema = z.object({
   id:z.uuid(),session_id:z.uuid(),participant_id:z.uuid(),request_id:z.uuid(),
   root_question_id:z.uuid(),parent_question_id:z.uuid(),expected_answer_updated_at:z.string(),
-  answer_hash:z.string(),answer_snapshot:z.string(),status:z.string(),result_question_id:z.uuid().nullable(),
+  answer_hash:z.string(),answer_snapshot:z.string(),supplemental_context_snapshot:z.string().max(1000).default(""),
+  status:z.string(),result_question_id:z.uuid().nullable(),
   prompt_version:z.string(),model_id:z.string().nullable(),failure_code:z.string().nullable(),
   input_tokens:z.number().nullable(),output_tokens:z.number().nullable(),
   created_at:z.string(),dispatched_at:z.string().nullable(),finished_at:z.string().nullable(),
@@ -159,7 +160,7 @@ export async function writeResearchWorkbook(client: SupabaseClient, selection: R
         "briefing_text", "model_id", "prompt_version", "schema_version", "saved_at_Asia_Seoul"]);
       const eventsSheet = sheet("QuestionEvents", ["session_id", "participant_code", "question_id", "event_type", "created_at_Asia_Seoul"]);
       const followupsSheet = sheet("FollowupRequests", ["session_id","participant_code","request_id","root_question_id",
-        "parent_question_id","answer_snapshot","answer_hash","status","result_question_id","prompt_version","model_id",
+        "parent_question_id","answer_snapshot","supplemental_context_snapshot","answer_hash","status","result_question_id","prompt_version","model_id",
         "failure_code","input_tokens","output_tokens","requested_at_Asia_Seoul","dispatched_at_Asia_Seoul","finished_at_Asia_Seoul"]);
       for (let start = 0; start < sessions.length; start += 100) {
         const batch = sessions.slice(start, start + 100);
@@ -173,7 +174,7 @@ export async function writeResearchWorkbook(client: SupabaseClient, selection: R
           readResearchRows(client, "diaries", "id,session_id,participant_id,status,experience_choices_json,feeling_choices_json,free_text,submitted_at", diarySchema, scoped),
           readResearchRows(client, "question_events", "id,session_id,question_id,event_type,created_at", eventSchema, scoped),
           readResearchRows(client,"question_followup_requests",
-            "id,session_id,participant_id,request_id,root_question_id,parent_question_id,expected_answer_updated_at,answer_hash,answer_snapshot,status,result_question_id,prompt_version,model_id,failure_code,input_tokens,output_tokens,created_at,dispatched_at,finished_at",
+            "id,session_id,participant_id,request_id,root_question_id,parent_question_id,expected_answer_updated_at,answer_hash,answer_snapshot,supplemental_context_snapshot,status,result_question_id,prompt_version,model_id,failure_code,input_tokens,output_tokens,created_at,dispatched_at,finished_at",
             followupRequestSchema,scoped),
         ]);
         const code = (id: string) => {
@@ -216,7 +217,7 @@ export async function writeResearchWorkbook(client: SupabaseClient, selection: R
           event.question_id, event.event_type, researchDateTime(event.created_at)]);
         for(const request of followupRequests) add(followupsSheet,[
           request.session_id,participantCode(request.participant_id),request.request_id,request.root_question_id,
-          request.parent_question_id,request.answer_snapshot,request.answer_hash,request.status,
+          request.parent_question_id,request.answer_snapshot,request.supplemental_context_snapshot,request.answer_hash,request.status,
           request.result_question_id,request.prompt_version,request.model_id,request.failure_code,
           request.input_tokens,request.output_tokens,researchDateTime(request.created_at),
           researchDateTime(request.dispatched_at),researchDateTime(request.finished_at),

@@ -2,7 +2,7 @@ import "server-only";
 import OpenAI from "openai";
 import type { ResponseCreateParamsNonStreaming, ResponseInputContent } from "openai/resources/responses/responses";
 import { z } from "zod";
-import { SENTENCE_REFINEMENT_PROMPT } from "../prompts/sentence-refinement-v1.1";
+import { SENTENCE_REFINEMENT_PROMPT } from "../prompts/sentence-refinement-v1.2";
 import { SentenceRefinementError, SENTENCE_REFINEMENT_MAX_CHARACTERS } from "../sentence-refinement-contract";
 import { SENTENCE_REFINEMENT_TIMEOUT_MS } from "./sentence-refinement-config";
 

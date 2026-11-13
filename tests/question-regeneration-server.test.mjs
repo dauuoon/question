@@ -29,7 +29,7 @@ const attempt=()=>({
 });
 const candidate=()=>({question:{question_text:"이 화면을 바라볼 때 본인이 아직 확신하지 못하는 부분은 무엇인가요?",
   content_principle:"사고의 자각과 외재화",question_type:"자기인식 질문",related_contexts:["visual_form"],
-  answer_guides:[],target:{type:"region",image_indices:[1],region:{x:.1,y:.2,width:.3,height:.4}}}});
+  answer_guides:[],answer_form:null,target:{type:"region",image_indices:[1],region:{x:.1,y:.2,width:.3,height:.4}}}});
 function memory() {
   const a=attempt(),failures=[];
   let status="reserved",calls=0,commits=0,acquired=true;
@@ -50,7 +50,7 @@ const deps=(generate=async()=>({output:candidate(),model:"mock-model",generatedA
 test("single question schema and provider never generate a five-candidate set; safe config is independent",()=>{
   const a=attempt(),params=provider.questionRegenerationParameters("mock-model",a,["https://mock.invalid"]);
   assert.equal(params.store,false);assert.equal(params.stream,false);
-  assert.equal(params.text.format.name,"why_box_question_regeneration_v1_0");
+  assert.equal(params.text.format.name,"why_box_question_regeneration_v1_3");
   assert.deepEqual(params.text.format.schema.required,["question"]);
   assert.equal(params.max_output_tokens,2500);
   assert.throws(()=>config.questionRegenerationConfig({OPENAI_API_KEY:"mock-only",

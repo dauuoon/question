@@ -1,8 +1,8 @@
 import "server-only";
 import OpenAI from "openai";
 import type { Response, ResponseCreateParamsNonStreaming, ResponseInputContent } from "openai/resources/responses/responses";
-import { QUESTION_GENERATION_PROMPT } from "../prompts/question-generation-v2.5";
-import { QUESTION_GENERATION_SCHEMA } from "../schemas/question-generation-v2.0";
+import { QUESTION_GENERATION_PROMPT } from "../prompts/question-generation-v2.15";
+import { QUESTION_GENERATION_SCHEMA } from "../schemas/question-generation-v2.3";
 import { DESIGN_CATEGORIES, REFLECTION_CONTEXTS, WORK_STAGES } from "../../constants/research-options";
 import { QuestionGenerationError } from "../question-generation-contract";
 import { QUESTION_GENERATION_TIMEOUT_MS } from "./question-generation-config";

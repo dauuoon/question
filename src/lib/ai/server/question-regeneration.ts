@@ -1,8 +1,8 @@
 import "server-only";
 import OpenAI from "openai";
 import type {ResponseCreateParamsNonStreaming,ResponseInputContent} from "openai/resources/responses/responses";
-import {QUESTION_REGENERATION_PROMPT} from "../prompts/question-regeneration-v1.0";
-import {QUESTION_REGENERATION_SCHEMA} from "../schemas/question-regeneration-v1.0";
+import { QUESTION_REGENERATION_PROMPT } from "../prompts/question-regeneration-v1.10";
+import {QUESTION_REGENERATION_SCHEMA} from "../schemas/question-regeneration-v1.3";
 import {QUESTION_REGENERATION_TIMEOUT_MS} from "./question-regeneration-config";
 import {extractQuestionOutput} from "./question-generation";
 import {QuestionGenerationError} from "../question-generation-contract";
@@ -16,6 +16,7 @@ export function questionRegenerationParameters(model:string,attempt:Regeneration
   const category=DESIGN_CATEGORIES.find(item=>item.id===value.primary_category_id);
   const data={
     ...value,design_category:category?.label,
+    supplemental_context:value.supplemental_context??"",
     design_subcategory:category?.items.find(item=>item.id===value.subcategory_id)?.label,
     work_stage:WORK_STAGES.find(item=>item.id===value.stage_id)?.label,
     reflection_contexts:value.context_ids.map(id=>REFLECTION_CONTEXTS.find(item=>item.id===id)?.label),

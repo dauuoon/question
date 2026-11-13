@@ -16,7 +16,9 @@ export const regenerationAttemptSchema=z.object({
   status:z.enum(["reserved","dispatch_started","staged","committed","failed","outcome_unknown","stale"]),
   question_id:z.uuid(),root_question_id:z.uuid(),slot_index:z.number().int().min(1).max(5),
   regeneration_index:z.number().int().min(0).max(1),
-  input_snapshot:draftInputSchema,image_snapshot:imageSnapshotSchema,
+  input_snapshot:draftInputSchema.extend({
+    supplemental_context:z.string().max(1000).nullable().optional(),
+  }),image_snapshot:imageSnapshotSchema,
   exclusion_snapshot:z.array(z.object({id:z.uuid(),question_text:z.string().min(1)}).strict()).min(1).max(100),
 }).strict();
 export type RegenerationAttempt=z.infer<typeof regenerationAttemptSchema>;
@@ -37,6 +39,7 @@ export function validateRegenerationOutput(output:unknown,attempt:RegenerationAt
   const parsed=regenerationOutputSchema.safeParse(output);
   if(!parsed.success||Buffer.byteLength(JSON.stringify(output))>16_384)throw new QuestionActionError("QR-VALIDATION",502);
   const question=parsed.data.question;
+  if(question.answer_form===undefined)throw new QuestionActionError("QR-VALIDATION",502);
   try {
     question.related_contexts=validateCandidateDetails({...question,candidate_rank:1},attempt.input_snapshot,attempt.image_snapshot);
     if(!question.related_contexts.length)throw new QuestionActionError("QR-VALIDATION",502);

@@ -107,9 +107,12 @@ function client(latency = 0, invalid = {}) {
   const respond = async (name, data) => { calls.push(name); if (latency) await delay(latency); return { data, error: null }; };
   return { calls,
     from(table) {
-      let followups=false;
-      const data=()=>table==="questions"&&followups?[]:rows[table];
-      const query = { select() { return this; }, eq(key,value) {
+      let followups=false, columns="";
+      const data=()=>table==="questions"&&followups?[]:
+        table==="questions"&&columns==="id,answer_form"?[{id:question,answer_form:null}]:
+        table==="answers"&&columns==="question_id,original_answer_fields"?[{question_id:question,original_answer_fields:null}]:
+        rows[table];
+      const query = { select(value) { columns=value; return this; }, eq(key,value) {
         if(table==="questions"&&key==="question_kind"&&value==="followup")followups=true;
         return this;
       }, in() { return this; },
@@ -151,15 +154,15 @@ test("same synthetic latency preserves the view and session-read optimization wi
     const saved = await newClient.from("sessions").select().maybeSingle();
     const optimized = await after(newClient, user, session, saved.data);
     measurements.after.push(performance.now() - started);
-    assert.deepEqual(optimized, {...original,readability_improved:true});
-    assert.equal(oldClient.calls.length, 9); assert.equal(newClient.calls.length, 9);
+    assert.deepEqual(optimized, {...original,readability_improved:true,generation_elapsed_ms:null});
+    assert.equal(oldClient.calls.length, 9); assert.equal(newClient.calls.length, 11);
     assert.equal(newClient.calls.filter(c => c === "sessions").length, 1);
-    assert.equal(newClient.calls.filter(c => c === "questions").length, 2);
+    assert.equal(newClient.calls.filter(c => c === "questions").length, 3);
     assert.equal(newClient.calls.includes("question_followup_requests"),false);
   }
   const mean = list => list.reduce((a, b) => a + b, 0) / list.length;
   t.diagnostic(JSON.stringify({ environment: "offline synthetic 15ms per request, 5 paired samples",
-    beforeRequests: 9, afterRequests: 9, beforeMeanMs: mean(measurements.before),
+    beforeRequests: 9, afterRequests: 11, beforeMeanMs: mean(measurements.before),
     afterMeanMs: mean(measurements.after) }));
 });
 

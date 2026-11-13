@@ -6,9 +6,10 @@ import {regenerationBeginSchema,regenerationStatusSchema} from "./regeneration-c
 import {regenerationAttemptSchema} from "../ai/server/question-regeneration-validation";
 import type {RegenerationRepository} from "../ai/server/question-regeneration-service";
 import {withinRegenerationDeadline} from "../ai/server/question-regeneration-service";
-import {QUESTION_REGENERATION_PROMPT_VERSION} from "../ai/prompts/question-regeneration-v1.0";
-import {QUESTION_REGENERATION_SCHEMA} from "../ai/schemas/question-regeneration-v1.0";
+import {QUESTION_REGENERATION_PROMPT_VERSION} from "../ai/prompts/question-regeneration-v1.10";
+import {QUESTION_REGENERATION_SCHEMA} from "../ai/schemas/question-regeneration-v1.3";
 import {IMAGE_BUCKET} from "../images/limits";
+import { answerFormsReady } from "../answers/forms-ready";
 
 export function regenerationDatabaseError(code:string,message?:string):QuestionActionError {
   const errors:Record<string,[string,number]>={
@@ -99,6 +100,7 @@ export function createRegenerationRepository(caller:SupabaseClient,trusted:Supab
     async images(attempt) {
       const urls:string[]=[];
       const signal=AbortSignal.timeout(10_000);
+      if(!await answerFormsReady(caller,signal))throw new QuestionActionError("QA-UNAVAILABLE",409);
       for(const image of attempt.image_snapshot) {
         if(!image.storage_path.startsWith(`${userId}/${attempt.session_id}/`))throw new QuestionActionError("QR-IMAGE");
         const bucket=caller.storage.from(IMAGE_BUCKET);

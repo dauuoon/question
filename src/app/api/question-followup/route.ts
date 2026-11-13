@@ -6,12 +6,14 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { readAnswer, requireActiveParticipant, requireEditableQuestion, AnswerError } from "@/lib/answers/server";
 import { readGenerationView } from "@/lib/question-generation/read";
 import { readQuestionFollowupAccess } from "@/lib/question-generation/followup-access";
-import { QUESTION_FOLLOWUP_PROMPT_VERSION } from "@/lib/ai/prompts/question-followup-v1.0";
+import { QUESTION_FOLLOWUP_PROMPT_VERSION } from "@/lib/ai/prompts/question-followup-v1.10";
 import {
   QuestionFollowupError, questionFollowupErrorMessages, questionFollowupRequestSchema,
 } from "@/lib/ai/question-followup-contract";
 import { questionFollowupConfig, QUESTION_FOLLOWUP_TIMEOUT_MS } from "@/lib/ai/server/question-followup-config";
 import { generateQuestionFollowup } from "@/lib/ai/server/question-followup";
+import { answerFormsReady } from "@/lib/answers/forms-ready";
+import { answerFieldsMatchForm, answerFieldsSchema, answerFieldsText, answerFormSchema } from "@/lib/answers/form";
 
 export const runtime = "nodejs";
 export const maxDuration = 70;
@@ -117,6 +119,12 @@ export async function POST(request: NextRequest) {
     }
     const record = requestRecordSchema.safeParse(begun.data);
     if (!record.success) throw new QuestionFollowupError("FOLLOWUP-DB");
+    const savedContext = await caller.from("question_followup_requests")
+      .select("supplemental_context_snapshot").eq("id", record.data.id).single();
+    if (savedContext.error || !savedContext.data ||
+      typeof savedContext.data.supplemental_context_snapshot !== "string") {
+      throw new QuestionFollowupError("FOLLOWUP-DB");
+    }
     if (record.data.status === "generated" || record.data.status === "no_followup") {
       const view = await readGenerationView(caller, userId, sessionId);
       return NextResponse.json({ outcome: record.data.status, view, activity_recorded: true }, { headers });
@@ -130,6 +138,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ outcome: "pending", request_id: record.data.request_id }, { status: 202, headers });
     }
     let config: ReturnType<typeof questionFollowupConfig>;
+    if(!await answerFormsReady(caller,controller.signal)) {
+      await finishFailure(admin,record.data.id,"FOLLOWUP-DB",false);
+      throw new QuestionFollowupError("FOLLOWUP-DB");
+    }
     try { config = questionFollowupConfig(); }
     catch (error) {
       await finishFailure(admin, record.data.id, "FOLLOWUP-CONFIG", false);
@@ -159,22 +171,46 @@ export async function POST(request: NextRequest) {
       .select("primary_category_id,subcategory_id,other_category_text,stage_id,additional_context")
       .eq("id", sessionId).eq("participant_id", userId).single();
     const question = await caller.from("questions")
-      .select("id,question_text").eq("id", input.question_id).eq("session_id", sessionId).single();
+      .select("id,question_text,answer_form").eq("id", input.question_id).eq("session_id", sessionId).single();
     const contexts = await caller.from("session_contexts").select("context_id").eq("session_id", sessionId);
     if (session.error || question.error || contexts.error || !session.data || !question.data || !contexts.data) {
       await finishFailure(admin, record.data.id, "FOLLOWUP-DB", false);
       throw new QuestionFollowupError("FOLLOWUP-DB");
+    }
+    let answerSelection: { selected_options: string[]; other: string; explanation: string } | undefined;
+    if (answer.current_answer_version === "original" && question.data.answer_form?.kind === "choice") {
+      const saved = await caller.from("answers").select("original_answer_fields,updated_at")
+        .eq("question_id", input.question_id).single();
+      if (saved.error) {
+        await finishFailure(admin, record.data.id, "FOLLOWUP-DB", false);
+        throw new QuestionFollowupError("FOLLOWUP-DB");
+      }
+      const form = answerFormSchema.safeParse(question.data.answer_form);
+      const fields = answerFieldsSchema.safeParse(saved.data?.original_answer_fields);
+      if (!form.success || form.data.kind !== "choice" || !fields.success ||
+        saved.data?.updated_at !== answer.updated_at || !answerFieldsMatchForm(form.data, fields.data) ||
+        answerFieldsText(fields.data) !== answerText) {
+        await finishFailure(admin, record.data.id, "FOLLOWUP-STALE", false);
+        throw new QuestionFollowupError("FOLLOWUP-STALE", 409);
+      }
+      answerSelection = {
+        selected_options: fields.data.slice(0, -2).filter(Boolean),
+        other: fields.data.at(-2) ?? "",
+        explanation: fields.data.at(-1) ?? "",
+      };
     }
     let generated: Awaited<ReturnType<typeof generateQuestionFollowup>>;
     try {
       generated = await generateQuestionFollowup(config, {
         question_text: question.data.question_text,
         answer_text: answerText,
+        answer_selection: answerSelection,
         primary_category_id: session.data.primary_category_id,
         subcategory_id: session.data.subcategory_id,
         other_category_text: session.data.other_category_text,
         stage_id: session.data.stage_id,
         additional_context: session.data.additional_context,
+        supplemental_context: savedContext.data.supplemental_context_snapshot,
         context_ids: contexts.data.map(item => item.context_id),
       }, controller.signal);
     } catch (error) {
@@ -195,6 +231,7 @@ export async function POST(request: NextRequest) {
       p_input_tokens: generated.input_tokens,
       p_output_tokens: generated.output_tokens,
       p_failure_code: null,
+      p_answer_form: generated.answer_form,
     });
     if (finished.error) {
       await finishFailure(admin, record.data.id, "FOLLOWUP-DB", true);

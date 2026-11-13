@@ -43,11 +43,15 @@ function setup({ acquired = true, configFailure = false, answer = savedAnswer,
   env = {OPENAI_QUESTION_FOLLOWUP_ENABLED:"true"},
   recoveryStatus = "generated", recoveryAge = 120_000, finishOutcome,
   realGuards = false, loggedIn = true, sessionOwner = owner, ledgerOwner = owner,
-  sessionStatus = "in_progress",
+  sessionStatus = "in_progress", choiceForm = null, choiceFields = null, choiceUpdatedAt = answer.updated_at,
 } = {}) {
   const calls = { rpc: [], generation: [], context: [], reads: [], filters: [], admin: 0 };
   const caller = {
     auth:{getUser:async()=>({data:{user:loggedIn?{id:owner}:null},error:null})},
+    rpc(name) {
+      assert.equal(name,"choice_answer_history_access_ready");
+      return {abortSignal:async()=>({data:true,error:null})};
+    },
     from(table) {
       calls.reads.push(table);
       const filters=[];
@@ -59,7 +63,9 @@ function setup({ acquired = true, configFailure = false, answer = savedAnswer,
           data: table === "sessions" ? {
             primary_category_id: "ux_ui", subcategory_id: "web_design", other_category_text: null,
             stage_id: "idea_concept", additional_context: "Extra context",
-          } : { id: questionId, question_text: "What shaped this decision?" },
+          } : table === "question_followup_requests" ? { supplemental_context_snapshot: "Saved follow-up context" } :
+            table === "answers" ? {original_answer_fields:choiceFields,updated_at:choiceUpdatedAt} :
+            { id: questionId, question_text: "What shaped this decision?",answer_form:choiceForm },
           error: null,
         }),
         maybeSingle:async()=>{
@@ -126,7 +132,7 @@ function setup({ acquired = true, configFailure = false, answer = savedAnswer,
     "@/lib/ai/server/question-followup": {
       generateQuestionFollowup: async (config, context) => {
         calls.generation.push({ config, context });
-        return { outcome: "generated", followup_question: "What evidence most influenced that decision?",
+        return { outcome: "generated", answer_form:null,followup_question: "What evidence most influenced that decision?",
           model: "local-test-model", input_tokens: 120, output_tokens: 24 };
       },
     },
@@ -159,9 +165,63 @@ test("follow-up API validates saved answers and makes one provider call with no 
   assert.equal(calls.generation[0].context.answer_text, savedAnswer.original_answer);
   assert.equal(calls.generation[0].context.question_text, "What shaped this decision?");
   assert.deepEqual(calls.generation[0].context.context_ids, ["visual_form"]);
+  assert.equal(calls.generation[0].context.supplemental_context, "Saved follow-up context");
   assert.equal("image" in calls.generation[0].context, false);
   assert.equal(calls.rpc.at(-1).args.p_input_tokens, 120);
   assert.equal(calls.rpc.at(-1).args.p_output_tokens, 24);
+});
+
+test("follow-up receives only selected options and user explanation separately",async()=>{
+  const choiceForm={kind:"choice",title:"비교",labels:["색","경계","직접 입력","짧은 설명"],
+    max_selections:2,explanation_prompt:"어떤 차이를 확인하나요?"};
+  const choiceFields=["색","","","색의 변화"];
+  const answer={...savedAnswer,original_answer:"색\n\n색의 변화"};
+  const {calls,route}=setup({choiceForm,choiceFields,answer});
+  const response=await post(route.POST);
+  assert.equal(response.status,200);
+  assert.deepEqual(calls.generation[0].context.answer_selection,
+    {selected_options:["색"],other:"",explanation:"색의 변화"});
+  assert.doesNotMatch(JSON.stringify(calls.generation[0].context.answer_selection),/경계|직접 입력|짧은 설명/);
+});
+
+test("follow-up receives only the current single choice or direct answer",async()=>{
+  const choiceForm={kind:"choice",title:"비교",labels:["색","경계","직접 입력","짧은 설명"],
+    max_selections:2,explanation_prompt:"어떤 차이를 확인하나요?"};
+  for(const [text,fields,expected] of [
+    ["색",["색","","",""],{selected_options:["색"],other:"",explanation:""}],
+    ["직접 작성",["","","직접 작성",""],{selected_options:[],other:"직접 작성",explanation:""}],
+  ]) {
+    const {calls,route}=setup({choiceForm,choiceFields:fields,answer:{...savedAnswer,original_answer:text}});
+    assert.equal((await post(route.POST)).status,200);
+    assert.deepEqual(calls.generation[0].context.answer_selection,expected);
+    assert.doesNotMatch(JSON.stringify(calls.generation[0].context),/임시 초안|경계/);
+  }
+});
+
+test("follow-up retains legacy direct input and the unified free-text response",async()=>{
+  const choiceForm={kind:"choice",title:"비교",labels:["색","경계","직접 입력","짧은 설명"],
+    max_selections:2,explanation_prompt:"어떤 차이를 확인하나요?"};
+  for(const [fields,text,selection] of [
+    [["색","","과거 직접 입력","기존 설명"],"색\n\n과거 직접 입력\n\n기존 설명",
+      {selected_options:["색"],other:"과거 직접 입력",explanation:"기존 설명"}],
+    [["색","경계","","보기 외 생각"],"색\n\n경계\n\n보기 외 생각",
+      {selected_options:["색","경계"],other:"",explanation:"보기 외 생각"}],
+  ]){
+    const {calls,route}=setup({choiceForm,choiceFields:fields,answer:{...savedAnswer,original_answer:text}});
+    assert.equal((await post(route.POST)).status,200);
+    assert.deepEqual(calls.generation[0].context.answer_selection,selection);
+  }
+});
+
+test("follow-up rejects changed choice fields before any model call",async()=>{
+  const choiceForm={kind:"choice",title:"비교",labels:["색","경계","직접 입력","짧은 설명"],
+    max_selections:2,explanation_prompt:"어떤 차이를 확인하나요?"};
+  const answer={...savedAnswer,original_answer:"색"};
+  const {calls,route}=setup({choiceForm,choiceFields:["색","","",""],answer,choiceUpdatedAt:"2026-10-08T11:01:00.000Z"});
+  const response=await post(route.POST);
+  assert.equal(response.status,409);
+  assert.equal(calls.generation.length,0);
+  assert.equal(calls.rpc.at(-1).args.p_outcome,"failed");
 });
 
 test("lost dispatch race returns pending without calling the provider", async () => {

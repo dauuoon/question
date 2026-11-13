@@ -48,11 +48,16 @@ export function createSessionBriefingRepository(
   }
 
   return {
-    begin: (input) => checked(briefingRequestSchema, caller, "begin_session_completion", {
-      p_session_id: input.session_id,
-      p_request_id: input.request_id,
-      p_retry_of_request_id: input.retry_of_request_id,
-    }),
+    begin: async (input) => {
+      if (await call(caller, "briefing_choice_snapshot_ready", {}) !== true) {
+        throw new SessionBriefingRepositoryError("BRIEFING-DB-CONTRACT");
+      }
+      return checked(briefingRequestSchema, caller, "begin_session_completion", {
+        p_session_id: input.session_id,
+        p_request_id: input.request_id,
+        p_retry_of_request_id: input.retry_of_request_id,
+      });
+    },
     read: readRequest,
     dispatch: (sessionId, requestId) => checked(z.boolean(), trusted, "authorize_session_briefing_dispatch", {
       p_session_id: sessionId,

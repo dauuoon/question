@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const SESSION_BRIEFING_PROMPT_VERSION = "session-design-briefing-v1.5";
+export const SESSION_BRIEFING_PROMPT_VERSION = "session-design-briefing-v1.6";
 export const SESSION_BRIEFING_SCHEMA_VERSION = "why_box_session_design_briefing_v1_0";
 
 export const briefingStateSchema = z.enum([
@@ -17,6 +17,11 @@ const selectedAnswerSchema = z.object({
   refined: z.string().nullable(),
   current_version: z.enum(["original", "refined"]),
   selected: z.string().min(1),
+  choice_selection: z.object({
+    selected_options: z.array(z.string().min(1)).max(4),
+    other: z.string(),
+    explanation: z.string(),
+  }).strict().optional(),
 }).strict();
 
 export const briefingInputSchema = z.object({
@@ -51,6 +56,11 @@ export const briefingInputSchema = z.object({
       const selected = answer.current_version === "refined" ? answer.refined : answer.original;
       if (!selected?.trim() || selected !== answer.selected) {
         context.addIssue({ code: "custom", message: "Selected answer must match its final version." });
+      }
+      if (answer.choice_selection && (answer.current_version !== "original" ||
+        [...answer.choice_selection.selected_options, answer.choice_selection.other, answer.choice_selection.explanation]
+          .filter(value => value.trim()).join("\n\n") !== answer.selected)) {
+        context.addIssue({ code: "custom", message: "Choice fields must match the selected original answer." });
       }
     }
     if (question.followup && (question.followup.session_id !== input.session_id ||

@@ -2,7 +2,10 @@ import { z } from "zod";
 import { questionGenerationErrorMessages, type QuestionGenerationErrorCode } from "../ai/question-generation-contract";
 import { generationViewSchema, type GenerationView } from "./view-contract";
 
-export type GenerationUI = { view: GenerationView; message: string; checking: boolean };
+export type GenerationUI = {
+  view: GenerationView; message: string; checking: boolean;
+  requestStartedAt: number | null; clockActive: boolean;
+};
 export const GENERATION_POLL_MS = 5_000;
 export const GENERATION_MAX_READS = 12;
 export const GENERATION_REQUEST_MS = 90_000;
@@ -56,9 +59,13 @@ export class GenerationController {
   private requestId: string | null = null;
   private uncertainRequest = false;
   private expectedIds: string[] | null = null;
+  private requestStartedAt: number | null = null;
+  private clockActive: boolean;
   constructor(initial: GenerationView, private ready: () => boolean,
     private publish: (value: GenerationUI) => void,
-    private send = sendGeneration, private read = readGeneration) { this.view = initial; }
+    private send = sendGeneration, private read = readGeneration) {
+    this.view = initial; this.clockActive = initial.state === "running";
+  }
 
   attach() {
     this.lifecycle++; this.disposed = false;
@@ -72,10 +79,13 @@ export class GenerationController {
     });
   }
   private emit(message = "", checking = false) {
-    if (!this.disposed) this.publish({ view: this.view, message, checking });
+    if (!this.disposed) this.publish({
+      view: this.view, message, checking, requestStartedAt: this.requestStartedAt, clockActive: this.clockActive,
+    });
   }
   private schedule() {
     if (this.disposed || this.reads >= GENERATION_MAX_READS) {
+      this.clockActive = false;
       this.view = { ...this.view, state: "recovery" }; this.emit(recoveryMessage); return;
     }
     this.timer = setTimeout(() => { this.timer = undefined; void this.check(); }, GENERATION_POLL_MS);
@@ -87,15 +97,21 @@ export class GenerationController {
     this.requestId = crypto.randomUUID();
     this.uncertainRequest = true;
     this.expectedIds = null;
+    this.requestStartedAt = Date.now();
+    this.clockActive = true;
     this.view = { ...this.view, state: "running" };
     const abort = new AbortController(); this.abort = abort; this.emit();
     const timeout = setTimeout(() => abort.abort(), GENERATION_REQUEST_MS);
     let message = "";
     try {
       const response = await this.send(this.view.session_id, this.requestId, abort.signal);
-      if (response.status === "completed") this.expectedIds = response.question_ids;
+      if (response.status === "completed") {
+        this.clockActive = false;
+        this.expectedIds = response.question_ids;
+      }
     }
     catch (error) {
+      this.clockActive = false;
       message = generationMessage(error instanceof RequestError ? error.code : "QGEN-DB");
       if (error instanceof RequestError && ["QGEN-AUTH", "QGEN-INPUT", "QGEN-BEGIN"].includes(error.code)) {
         this.uncertainRequest = false;
@@ -119,8 +135,10 @@ export class GenerationController {
           this.view.questions.some((q, i) => q.id !== this.expectedIds?.[i]))) {
         this.view = { ...this.view, state: "recovery", questions: [] };
       }
+      if (this.view.state !== "running") this.clockActive = false;
       this.emit(this.view.state === "recovery" ? recoveryMessage : this.view.state === "editable" ? message : "");
     } catch {
+      this.clockActive = false;
       this.view = { ...this.view, state: "recovery" }; this.emit(recoveryMessage);
     } finally { clearTimeout(timeout); this.busy = false; }
     if (!this.disposed && this.view.state === "running") this.schedule();

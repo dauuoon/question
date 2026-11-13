@@ -53,6 +53,7 @@ export async function runSessionBriefing(
   repository: SessionBriefingRepository,
   provider: SessionBriefingProvider,
   request: { session_id: string; request_id: string; retry_of_request_id?: string | null },
+  prepare?: (input:BriefingInput) => Promise<BriefingInput>,
 ): Promise<BriefingRequest> {
   const identity = {
     session_id: request.session_id,
@@ -76,7 +77,8 @@ export async function runSessionBriefing(
 
   let generated: { response: unknown; model_id: string };
   try {
-    generated = await provider.generate(input.data);
+    const prepared=prepare?await prepare(input.data):input.data;
+    generated = await provider.generate(prepared);
   } catch (error) {
     const providerError = error instanceof SessionBriefingProviderError ? error : null;
     await repository.fail({

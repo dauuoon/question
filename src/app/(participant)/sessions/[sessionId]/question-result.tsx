@@ -1,5 +1,7 @@
 "use client";
 
+import { ContextSupplementEditor } from "./context-supplement-editor";
+import { AnswerFormInput } from "./answer-form-input";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -104,10 +106,11 @@ function isWholeImageQuestion(question:DisplayQuestion) {
   return question.targets.every(target=>target.x===null);
 }
 
-async function persistAnswer(questionId:string,text:string,version:AnswerVersion,updatedAt:string|null) {
+async function persistAnswer(questionId:string,text:string,version:AnswerVersion,updatedAt:string|null,fields?:string[]|null) {
   const response=await fetch("/api/question-answer",{
     method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({question_id:questionId,answer_text:text,answer_version:version,expected_updated_at:updatedAt}),
+    body:JSON.stringify({question_id:questionId,answer_text:text,answer_version:version,expected_updated_at:updatedAt,
+      ...(fields&&version==="original"?{answer_fields:fields}:{})}),
   });
   const body=await response.json();
   if(!response.ok || typeof body.updated_at!=="string") {
@@ -117,14 +120,30 @@ async function persistAnswer(questionId:string,text:string,version:AnswerVersion
   return {updated_at:body.updated_at as string};
 }
 
-export function QuestionResult({result,sessionStatus="in_progress"}:{result:GenerationView;sessionStatus?:string}) {
+export function QuestionResult({
+  result, sessionId, initialContextSupplement = { revision: 0, text: "" },
+  contextSupplementAvailable = true, sessionStatus = "in_progress",
+  localPreview = false,
+}: {
+  result: GenerationView;
+  sessionId?: string;
+  initialContextSupplement?: { revision: number; text: string };
+  contextSupplementAvailable?: boolean;
+  sessionStatus?: string;
+  localPreview?: boolean;
+}) {
   const [view,setView]=useState(result);
   const [slot,setSlot]=useState(1);
+  const [contextSupplement,setContextSupplement]=useState(initialContextSupplement);
   const [revision,setRevision]=useState(0);
   const [notice,setNotice]=useState("");
   const [status,setStatus]=useState(questionSessionStatus(sessionStatus));
   useEffect(()=>setStatus(questionSessionStatus(sessionStatus)),[sessionStatus]);
-  return <QuestionResultEditor key={revision} result={view} initialSlot={slot} sessionStatus={status}
+  return <QuestionResultEditor key={revision} result={view} sessionId={sessionId}
+    initialContextSupplement={contextSupplement} onContextSupplementSaved={setContextSupplement}
+    contextSupplementAvailable={contextSupplementAvailable}
+    localPreview={localPreview&&process.env.NODE_ENV==="development"}
+    initialSlot={slot} sessionStatus={status}
     focusAfterAction={revision>0} initialNotice={notice}
     onSessionStatus={setStatus}
     onResult={(next,nextSlot,activityRecorded,superseded)=>{
@@ -136,8 +155,12 @@ export function QuestionResult({result,sessionStatus="in_progress"}:{result:Gene
     }} />;
 }
 
-function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,initialNotice,sessionStatus,onSessionStatus}:{
-  result:GenerationView;initialSlot:number;focusAfterAction:boolean;initialNotice:string;
+function QuestionResultEditor({result,sessionId,initialContextSupplement,onContextSupplementSaved,contextSupplementAvailable,initialSlot,onResult,focusAfterAction,initialNotice,sessionStatus,onSessionStatus,localPreview}:{
+  result:GenerationView;sessionId?:string;initialContextSupplement:{revision:number;text:string};
+  onContextSupplementSaved:(value:{revision:number;text:string})=>void;
+  contextSupplementAvailable:boolean;
+  localPreview:boolean;
+  initialSlot:number;focusAfterAction:boolean;initialNotice:string;
   sessionStatus:string;onSessionStatus:(status:string)=>void;
   onResult:(next:GenerationView,slot:number,activityRecorded:boolean,superseded:boolean)=>void;
 }) {
@@ -145,6 +168,8 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   const imageMap=new Map(result.images.map(image=>[image.id,image]));
   const router=useRouter();
   const [questionIndex,setQuestionIndex]=useState(initialSlot-1);
+  const [pinsVisible,setPinsVisible]=useState(true);
+  const [choiceDrafts,setChoiceDrafts]=useState<Record<string,{text:string;selected:boolean}>>({});
   const current=questions[questionIndex];
   const [imageId,setImageId]=useState(()=>current&&isWholeImageQuestion(current)?
     result.images[0]?.id??"":current?.targets[0]?.image_id??result.images[0]?.id??"");
@@ -200,6 +225,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   const [bubble,setBubble]=useState<{questionId:string;imageId:string;anchor:HTMLButtonElement}|null>(null);
   const [imageFrameSize,setImageFrameSize]=useState({width:0,height:0});
   const answerDiffRef=useRef<HTMLDivElement>(null);
+  const answerInputRef=useRef<HTMLTextAreaElement>(null);
   const [navigationBusy,setNavigationBusy]=useState(false);
   const navigationBusyRef=useRef(false);
   const refiningQuestionRef=useRef<string|null>(null);
@@ -207,7 +233,8 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   const [refiningQuestion,setRefiningQuestion]=useState<string|null>(null);
   const autosave=useRef<AnswerAutosave|null>(null);
   if(!autosave.current) {
-    autosave.current=new AnswerAutosave(answers, persistAnswer, (id,answer,status,error)=>{
+    autosave.current=new AnswerAutosave(answers, localPreview?
+      async()=>({updated_at:new Date().toISOString()}):persistAnswer, (id,answer,status,error)=>{
       answersRef.current={...answersRef.current,[id]:answer};
       setAnswers(answersRef.current);
       setSaveStatus(previous=>({...previous,[id]:status}));
@@ -225,6 +252,8 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
   const navigationLocked=navigationBusy||refiningQuestion!==null||questionAction!==null||followupBusy;
   const answerWritable=result.answer_editable&&!sessionFinished&&current?.status!=="skipped";
   const hasWrittenAnswer=!!currentAnswer&&!!(currentAnswer.original_answer.trim()||currentAnswer.refined_answer?.trim());
+  const useAnswerForm=!!current?.answer_form&&currentAnswer?.current_answer_version==="original"&&
+    (current.answer_form.kind==="choice"||currentAnswer.original_answer_fields!=null||!currentAnswer.original_answer.trim());
   const apiCapabilities=result.question_actions.regeneration;
   const reserveCount=apiCapabilities?.per_question.find(item=>item.question_id===current?.id)?.reserve_count??
     result.question_actions.reserve_count;
@@ -487,10 +516,21 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
 
   async function postCompletion(request:CompletionRequest) {
     saveCompletionRequest(request,"loading");
-    setCompletionMessage("답변을 확인하고 디자인 브리핑을 생성하고 있어요.");
+    setCompletionMessage("세션을 마무리하고 있어요.");
     setCompletionMissing([]);
     const body={request_id:request.request_id,retry_of_request_id:request.retry_of_request_id};
     let latestState:string|undefined;
+    let active=true;
+    const progress=setInterval(()=>{
+      void fetch(`/api/sessions/${result.session_id}/complete?request_id=${encodeURIComponent(request.request_id)}`,
+        {cache:"no-store"}).then(async response=>{
+          if(!response.ok)throw new Error(`Completion progress HTTP ${response.status}`);
+          const parsed=z.object({phase:z.enum(["refining","briefing"]).nullable(),failure_count:z.number().int().nonnegative()}).strict().parse(await response.json());
+          if(active&&parsed.phase)setCompletionMessage(parsed.phase==="refining"?
+            "답변을 정리하고 있어요.":parsed.failure_count>0?
+              "일부 답변은 원문으로 유지하고 디자인 브리핑을 작성하고 있어요.":"디자인 브리핑을 작성하고 있어요.");
+        }).catch(error=>console.error("WHY BOX completion progress",error));
+    },1200);
     try {
       for(let attempt=0;attempt<5;attempt++) {
         if(attempt>0)await new Promise(resolve=>setTimeout(resolve,1200));
@@ -545,6 +585,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
       saveCompletionRequest(request,"unknown");
       setCompletionMessage("완료 요청 결과를 확인하지 못했습니다. 기존 답변은 보존되어 있으며 같은 요청의 상태만 확인할 수 있습니다.");
     } finally {
+      active=false;clearInterval(progress);
       setCompletionOverlay(false);
       completionBusyRef.current=false;
       setNavigationBusy(false);
@@ -882,6 +923,28 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
     </header>
     <div className="question-result-layout">
       <section className="question-image-column" aria-label="질문과 연결된 디자인 이미지">
+        <div className="question-image-toolbar">
+        <button type="button" className="question-pin-visibility" aria-pressed={pinsVisible}
+          aria-label={pinsVisible?"핀 숨기기":"핀 보이기"} title={pinsVisible?"핀 숨기기":"핀 보이기"}
+          onClick={()=>{
+            if(pinsVisible)setBubble(null);
+            setPinsVisible(!pinsVisible);
+          }}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+            <circle cx="12" cy="12" r="3" />
+            {!pinsVisible && <path d="M3 3l18 18" />}
+          </svg>
+        </button>
+        {sessionId?<ContextSupplementEditor
+          sessionId={sessionId}
+          initialText={initialContextSupplement.text}
+          initialRevision={initialContextSupplement.revision}
+          editable={result.answer_editable&&!sessionFinished&&!localPreview}
+          available={contextSupplementAvailable}
+          onSaved={onContextSupplementSaved} />:null}
+        </div>
         <div className="question-image-stage">
           {shownImage?<div ref={imageFrameRef} className="question-image-frame" style={{
             aspectRatio:shownImage.width&&shownImage.height?`${shownImage.width}/${shownImage.height}`:`${shownRatio}`,
@@ -895,7 +958,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
                 }
               }}
               alt={`업로드한 디자인 이미지 ${shownImage.sort_order+1}`} />
-            <div className="question-image-pins" aria-label="질문 위치">
+            {pinsVisible && <div className="question-image-pins" aria-label="질문 위치">
               {pinLayout.some(pin=>Math.hypot(pin.left-pin.originalX,pin.top-pin.originalY)>3)?
                 <svg className="question-pin-connectors" viewBox={`0 0 ${imageFrameSize.width||1} ${imageFrameSize.height||1}`}
                   preserveAspectRatio="none" aria-hidden="true">
@@ -927,9 +990,14 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
                 aria-controls={bubble?.questionId===question.id?"question-pin-bubble":undefined}
                 disabled={navigationLocked}
                 onClick={event=>void goToPin(question,activeImageId,event.currentTarget)}>{question.slot_index}</button>;})}
-            </div>
-            {bubble&&bubble.imageId===activeImageId&&bubble.questionId===current?.id?
+            </div>}
+            {pinsVisible&&bubble&&bubble.imageId===activeImageId&&bubble.questionId===current?.id?
               <QuestionBubble frame={imageFrameRef} anchor={bubble.anchor} question={current}
+                answerDisabled={!answerWritable||parentAnswerLocked||navigationLocked}
+                onAnswer={()=>{
+                  setBubble(null);
+                  answerInputRef.current?.focus();
+                }}
                 obstacles={pinLayout.filter(pin=>pin.questionId!==current.id).map(pin=>({
                   left:pin.left-19,right:pin.left+19,top:pin.top-19,bottom:pin.top+19,
                 }))}
@@ -1022,13 +1090,17 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
               active={activeTab==="summary"&&!briefingLoading&&!briefingEditing} />:null}
           </section>:<>
           <div className="question-panel-content">
+          {result.answer_forms_available===false?<p role="status" className="question-result-readonly">
+            답변 양식 저장 기능이 이 환경에 아직 적용되지 않았습니다. 기존 질문과 자유 입력 답변은 그대로 표시합니다.
+          </p>:null}
+          <p className="question-panel-current-label">Q{current.slot_index}</p>
           <p className="question-panel-text">{current.question_text}</p>
           <div className="question-actions">
             <button type="button" className="question-text-action" aria-label="현재 질문 재생성"
               title={regenerationUnavailableMessage||undefined}
               aria-busy={questionAction==="regenerate"}
               aria-disabled={!!regenerationUnavailableMessage||navigationLocked}
-              disabled={navigationLocked||sessionFinished||!!current.followup_question}
+              disabled={localPreview||navigationLocked||sessionFinished||!!current.followup_question}
               onClick={()=>{
                 if(regenerationUnavailableMessage) {
                   setActionNotice(regenerationUnavailableMessage);
@@ -1041,7 +1113,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
             </button>
             <button type="button" className="question-text-action" aria-label="현재 질문 건너뛰기"
               aria-busy={questionAction==="skip"}
-              disabled={sessionFinished||!result.question_actions.ready||!result.answer_editable||hasWrittenAnswer||
+              disabled={localPreview||sessionFinished||!result.question_actions.ready||!result.answer_editable||hasWrittenAnswer||
                 current.status==="skipped"||navigationLocked||!!current.followup_question}
               onClick={()=>void applyQuestionAction("skip")}>
               <span aria-hidden="true">↪</span> {questionAction==="skip"?
@@ -1055,12 +1127,23 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
               onClick={()=>void applyQuestionAction(actionRequestRef.current?.action??"skip",true)}>
               같은 요청으로 결과 다시 확인
             </button>:undefined} />:null}
-          <div className="question-answer">
+          <div className={`question-answer${useAnswerForm&&
+            (current.answer_form?.kind==="numbered"||current.answer_form?.kind==="choice")?
+            " question-answer-with-divider":""}`}>
+            {useAnswerForm&&current.answer_form?<AnswerFormInput key={current.id} id={`answer-${current.id}`}
+              form={current.answer_form} inputRef={answerInputRef}
+              legacyText={current.answer_form.kind==="choice"&&!currentAnswer?.original_answer_fields?
+                currentAnswer?.original_answer:undefined}
+              choiceDraft={choiceDrafts[current.id]}
+              onChoiceDraft={draft=>setChoiceDrafts(previous=>({...previous,[current.id]:draft}))}
+              fields={currentAnswer?.original_answer_fields??current.answer_form.labels.map(()=>"")}
+              disabled={!answerWritable||parentAnswerLocked||navigationLocked}
+              onChange={(text,fields)=>autosave.current?.change(current.id,text,800,fields)} />:<>
             {answerDiffSegments?<div className="question-answer-diff" aria-hidden="true" ref={answerDiffRef}>
               {answerDiffSegments.map((segment,index)=><span key={`${index}-${segment.text}`}
                 className={segment.changed?"question-answer-diff-changed":undefined}>{segment.text}</span>)}
             </div>:null}
-            <textarea id="question-answer-text"
+            <textarea id="question-answer-text" ref={answerInputRef}
               className={`question-answer-textarea${answerDiffSegments?" has-answer-diff":""}${parentAnswerLocked?" is-followup-locked":""}`}
               aria-label="나의 생각"
               placeholder={current.status==="skipped"?
@@ -1076,6 +1159,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
               onChange={event=>{
                 if(!parentAnswerLocked&&!followupBusyRef.current)autosave.current?.change(current.id,event.target.value);
               }} />
+            </>}
           </div>
           {parentAnswerLocked?<p className="question-followup-lock-note" role="status">
             후속 질문이 생성되어 답변을 수정할 수 없습니다.
@@ -1083,6 +1167,18 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
           {current.followup_question?<section className="question-followup" aria-label="후속 질문">
             <p className="question-followup-label"><span aria-hidden="true">↳</span> 후속 질문</p>
             <p className="question-followup-text">{current.followup_question.question_text}</p>
+            {current.followup_question.answer_form&&followupAnswer?.current_answer_version==="original"&&
+              (current.followup_question.answer_form.kind==="choice"||
+                followupAnswer.original_answer_fields!=null||!followupAnswer.original_answer.trim())?
+              <AnswerFormInput key={current.followup_question.id} id={`answer-${current.followup_question.id}`}
+                form={current.followup_question.answer_form}
+                legacyText={current.followup_question.answer_form.kind==="choice"&&!followupAnswer.original_answer_fields?
+                  followupAnswer.original_answer:undefined}
+                choiceDraft={choiceDrafts[current.followup_question.id]}
+                onChoiceDraft={draft=>setChoiceDrafts(previous=>({...previous,[current.followup_question!.id]:draft}))}
+                fields={followupAnswer.original_answer_fields??current.followup_question.answer_form.labels.map(()=>"")}
+                disabled={!result.answer_editable||sessionFinished||navigationLocked}
+                onChange={(text,fields)=>autosave.current?.change(current.followup_question!.id,text,800,fields)} />:
             <textarea id="question-followup-answer-text"
               className="question-answer-textarea question-followup-answer"
               aria-label="후속 질문에 대한 나의 생각"
@@ -1090,7 +1186,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
               value={followupAnswerText}
               disabled={!result.answer_editable||sessionFinished||navigationLocked}
               maxLength={20_000}
-              onChange={event=>autosave.current?.change(current.followup_question!.id,event.target.value)} />
+              onChange={event=>autosave.current?.change(current.followup_question!.id,event.target.value)} />}
             <p className="question-answer-save-status" role="status" aria-live="polite">
               {saveStatus[current.followup_question.id]==="저장됨"?"":saveStatus[current.followup_question.id]}
               {saveStatus[current.followup_question.id]==="저장 실패"?" · 입력한 내용은 유지되어 있어요.":""}
@@ -1128,7 +1224,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
               <div className="question-answer-tools">
                 <button type="button" className="question-text-action question-refine-button"
                   aria-busy={refiningQuestion===current.id}
-                  disabled={!answerWritable || !answerText.trim() || navigationLocked||parentAnswerLocked}
+                  disabled={localPreview||!answerWritable || !answerText.trim() || navigationLocked||parentAnswerLocked}
                   onClick={()=>void refineCurrentAnswer()}>
                   <span className="question-refine-icon" aria-hidden="true">✦</span>
                   <span className="question-refine-label">
@@ -1137,7 +1233,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
                 </button>
                 {result.followup_enabled?<button type="button" className="question-text-action question-refine-button question-followup-button"
                   aria-busy={followupBusy}
-                  disabled={!answerWritable||!answerText.trim()||navigationLocked||parentAnswerLocked||
+                  disabled={localPreview||!answerWritable||!answerText.trim()||navigationLocked||parentAnswerLocked||
                     repeatNoFollowup||repeatUnknownFollowup}
                   onClick={()=>void generateFollowup(!!followupRequestId||!!pendingFollowup)}>
                   <span aria-hidden="true">↳</span>
@@ -1198,7 +1294,7 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
         <div className={`wizard-footer-row${sessionStatus==="in_progress"?"":" is-single-action"}`}>
           <Link href="/history" className="button-link button-secondary">나의기록으로</Link>
           {sessionStatus==="in_progress"?<div className="wizard-actions">
-            <button type="button" disabled={navigationBusy||refiningQuestion!==null||questionAction!==null||
+            <button type="button" disabled={localPreview||!result.answer_editable||navigationBusy||refiningQuestion!==null||questionAction!==null||
               completionBusyRef.current||briefingEditing}
               onClick={()=>setFinishDialog(true)}>세션 종료</button>
           </div>:null}
@@ -1233,6 +1329,6 @@ function QuestionResultEditor({result,initialSlot,onResult,focusAfterAction,init
       </section>
     </div>:null}
   </section>
-  {completionOverlay?<LoadingState variant="overlay">디자인 브리핑을 생성하고 있어요···</LoadingState>:null}
+  {completionOverlay?<LoadingState variant="overlay">{completionMessage}</LoadingState>:null}
   </>;
 }

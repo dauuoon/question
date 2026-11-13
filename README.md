@@ -2,6 +2,383 @@
 
 WHY BOX is a research tool for supporting designers' reflective thinking. The authoritative v1.0 requirements are in [WHY_BOX_SPEC.md](./WHY_BOX_SPEC.md).
 
+## Local question-screen preview
+
+New question counts are selected with a slider from 2 to 5; new sessions default
+to 3. An editable older draft set to 1 is changed to 3 through the normal
+autosave before generation, while existing generated one-question sessions remain
+readable. The image toolbar can hide or show all question pins without changing
+question navigation or answers; visibility resets when the screen is reopened.
+
+The runtime prompt directory keeps only the latest version of each prompt.
+Each file contains its instructions without importing an older prompt;
+historical version identifiers in database migrations and saved records remain unchanged.
+
+### Concrete comparisons and choice forms (2026-11-13)
+
+- Single-choice revision: initial prompt v2.14, regeneration v1.9, follow-up v1.9;
+  schemas are `why_box_question_generation_v2_3`,
+  `why_box_question_regeneration_v1_3` and `why_box_question_followup_v1_3`.
+  The [previous prompt sources](./prompt-history/2026-11-13-single-choice-baseline/)
+  are preserved. Apply the [single-choice migration](./supabase/migrations/20261113070000_single_choice_answers.sql)
+  and the [history access migration](./supabase/migrations/20261113080000_choice_answer_history_access.sql)
+  before enabling this version. It archives the prior original choice answer
+  transactionally whenever that answer is edited, with the same active-owner or
+  active-admin read access as other answers.
+  Existing answers are not rewritten.
+- A choice answer is now one option or one direct-entry response. Direct entry is
+  shown only when selected; an empty response is unanswered. An unselected direct
+  draft stays in memory across question navigation until reload and is never
+  saved, sent to follow-ups, or included in briefings. Existing multi-selection
+  and explanation answers remain readable until edited; the preceding answer is
+  archived upon edit.
+- Comparison questions identify what changes and what difference to consider,
+  while retaining each question type's purpose. A choice form is optional and
+  only used when choosing a comparison focus or direction serves that purpose;
+  it does not turn open alternative generation into multiple choice.
+- The preceding choice-form prompts were v2.13, v1.8 and v1.8.
+  [Their earlier baseline](./prompt-history/2026-11-13-choice-form-baseline/) is
+  preserved. Apply the [choice migration](./supabase/migrations/20261113050000_question_choice_answers.sql)
+  after all earlier migrations only to an approved database. It preserves rows,
+  historical prompt/schema pairs and existing generation/replacement policies.
+- Choice metadata has `kind: "choice"`, a title, 2–4 neutral option labels
+  followed by `직접 입력` and `짧은 설명`, a question-specific
+  `max_selections` and an `explanation_prompt`. New forms set the maximum to 1;
+  the last label and prompt remain for compatibility, but are not answer content.
+  Historical question wording may still ask for multiple selections or an
+  explanation; its original wording and form metadata are not rewritten.
+- Choice options appear in two equal columns, switching to one in a narrow
+  panel. The last button selects direct entry; its text field is hidden otherwise.
+- In `original_answer_fields`, each selected option occupies its own slot,
+  followed by the direct-input and legacy explanation slots. New answers leave
+  the explanation slot empty. Unselected options
+  and form text are not answer content. `original_answer` joins nonblank values
+  for compatibility. Follow-up generation receives the separated fields when
+  the original choice answer is current; a refined answer remains free text.
+  No new model call is introduced. Existing explicitly requested follow-up calls
+  allow up to 800 output tokens instead of 350 for the expanded schema, which
+  can increase their maximum cost.
+- Session completion snapshots include the selected choice labels and user
+  writing separately for original-version choice answers, including follow-ups.
+  The briefing provider also receives the question as non-authoritative context;
+  unselected options and form labels are excluded. Existing briefing snapshots
+  remain readable and are not rewritten. Apply the guarded
+  [briefing choice snapshot migration](./supabase/migrations/20261113060000_briefing_choice_snapshot.sql)
+  after earlier migrations to an approved DB before deploying this app version;
+  completion is blocked if the migration readiness check is unavailable.
+  Previously frozen snapshots cannot recover missing structured choice metadata.
+
+### Text roles in questions (2026-11-13)
+
+- Text is not presumed to be information that must be read, or decorative:
+  when its role is unclear the question rules prioritize exploring its role,
+  selection or visual effect as appropriate to the question type. A stated
+  information purpose can support readability questions; blur or overlap alone
+  is not treated as a problem. The same rules apply to all three question flows.
+- Initial, regeneration and follow-up prompts are v2.12, v1.7 and v1.7.
+  [The prior source](./prompt-history/2026-11-13-text-role-baseline/) is preserved.
+  Apply the [version migration](./supabase/migrations/20261113040000_question_text_role_versions.sql)
+  after earlier migrations before enabling the prompts. It preserves old records
+  and existing version/schema pairs; the framework, forms and policies are unchanged.
+
+### Natural question wording and elapsed time (2026-11-13)
+
+- The shared question rules retain only user conditions that affect the answer,
+  preserve exact screen wording when its meaning is being examined, and distinguish
+  predicted user actions from design choices and alternative exploration.
+- Alternatives do not require arbitrary fixed conditions. Familiar, precise
+  terms such as 3D graphics or layout are allowed; numbered forms are used only
+  when the question actually requests multiple items. The framework, answer
+  storage, candidate count and regeneration limits are unchanged.
+- Initial, replacement and follow-up prompts are v2.11, v1.6 and v1.6.
+  [The prior source](./prompt-history/2026-11-13-natural-expression-baseline/)
+  is preserved. Apply the guarded
+  [version migration](./supabase/migrations/20261113030000_question_natural_expression_versions.sql)
+  after earlier migrations before enabling these prompts; old records are not rewritten.
+- Question generation keeps its existing spinner and shows elapsed time, not
+  progress or a prediction. A newly submitted request uses the browser's request
+  start; on re-entry an in-progress attempt resumes from the database start time
+  as measured by the server, so network transit and pre-attempt setup are not
+  included. The timer stops on completion, failure or uncertain recovery and is
+  reset for a new request. No additional AI call is made.
+
+### Question expression revision (2026-11-12)
+
+- The expression-only revision used `question-generation-v2.7`,
+  `question-regeneration-v1.2` and `question-followup-v1.2`. The active
+  form-aware versions below retain those expression rules.
+- [Shared expression rules](./src/lib/ai/question-expression-rules.ts) replace
+  the professional-terminology-first/English gloss rules and duplicate appended
+  English guidance. They prefer recognizable Korean element names, grounded
+  short labels, and one explicit answer task; reasons are asked directly only
+  when they are the central task. Comparison scope and assumptions must be
+  concrete, with no invented conflict, label, function, or intention.
+- Good examples no longer combine selection and justification or routinely
+  append a reason question. Criteria exploration and assumption review retain
+  their reflective purpose rather than becoming selection or design evaluation.
+  Counts remain optional when listing comparison items or alternatives is useful.
+- [Sentence refinement v1.2](./src/lib/ai/prompts/sentence-refinement-v1.2.ts)
+  remains separate: design terminology is allowed only for a meaning already
+  clear in the answer. "I don't know" must not be interpreted as an unchosen
+  direction, missing rationale, or an additional review process.
+- Exact pre-change source is retained in
+  [the expression baseline archive](./prompt-history/2026-11-12-expression-baseline/).
+  These files are not imported by the application.
+- The five content principles/types, five initial candidates, ranking,
+  image target selection, Reserve-first replacements, dispatch budgets and
+  per-slot limits are unchanged. There is no new refinement API call or automatic
+  answer submission. Apply
+  [the version allowlist migration](./supabase/migrations/20261112050000_question_expression_versions.sql)
+  after all its earlier migrations before enabling the new initial/replacement
+  versions. It accepts old versions too and does not rewrite past records.
+  No remote migration or live AI request was performed for this revision.
+
+### Answer forms (2026-11-12)
+
+Forms are implemented in generation contracts, database persistence, answer
+autosave and the actual participant screen, not just proposed:
+
+| Flow | Prompt | Structured-output schema |
+| --- | --- | --- |
+| Initial | `question-generation-v2.13` | `why_box_question_generation_v2_2` |
+| Regeneration | `question-regeneration-v1.8` | `why_box_question_regeneration_v1_2` |
+| Answer-based follow-up | `question-followup-v1.8` | `why_box_question_followup_v1_2` |
+
+- Each new generated candidate/follow-up explicitly provides `answer_form`:
+  `null` for one thought/judgment, or
+  `{ kind: "numbered" | "sections", title: string, labels: string[] }`,
+  or choice metadata as described above.
+  Numbered forms match a requested number of items; section forms separate
+  actual designs. The current validated bound is 2–6 unique rows and 100
+  characters per title/label. Labels name rows/designs, never suggested answers.
+- `answer_guides` remains a thinking-hint field. A form requires an empty guide
+  array; no guides or scaffolding are inserted as answer text.
+- Forms and their titles/labels are immutable question metadata. The answer
+  stores only user values in `answers.original_answer_fields`, preserving
+  empty positions and multiline content. `original_answer` joins nonblank user
+  values with two newlines, retaining compatibility with existing answer hashes,
+  completion, briefing, follow-up, refinement and plain-text exports.
+  Displaying a blank form alone neither saves an answer nor marks it answered.
+- Fields survive autosave failures, retries and question navigation using the
+  existing revision-conflict checks. Refined answers use free text; switching
+  back to the original restores its fields. A legacy nonempty unstructured answer
+  is not automatically split or overwritten.
+- [The answer-form migration](./supabase/migrations/20261112060000_question_answer_forms.sql)
+  requires all earlier migrations, including the context-snapshot and expression
+  version migrations. Apply it only to an explicitly approved local/test DB
+  before testing real generation. It adds nullable candidate/question form
+  metadata, user-value answer fields, follow-up schema provenance, validators,
+  immutable-copy triggers, scoped answer-field privileges, a form-aware follow-up
+  RPC overload and paired prompt/schema allowlists. Existing rows stay unchanged
+  with null metadata; old prompt/schema pairs remain accepted.
+- The migration is necessary because frontend schema changes alone cannot store
+  new columns or pass the database's prompt/schema constraints. The application
+  probes `question_choice_answers_ready()` before new provider dispatch; missing
+  readiness blocks AI calls. Old records remain readable when only the new
+  columns are missing, with an explicit availability notice.
+- Inspect-only `limit=0` metadata checks found that the default app's existing
+  **participant** DB lacks `questions.answer_form`,
+  `answers.original_answer_fields`, `question_followup_requests.schema_version`
+  and the supplementary-context table. It is **not ready** for real new-version
+  generation/storage. That DB was not migrated or written to. A separate TEST
+  DB has since been prepared as described below; no actual AI calls were made.
+- There is no additional AI/refinement request. Forms ride on existing initial,
+  Reserve/API replacement and explicitly requested follow-up flows. Provider
+  dispatch budgets, Reserve priority and per-slot/follow-up limits are unchanged.
+  Form metadata adds output tokens to existing requests; readiness is a DB probe.
+- Exact expression-only source before this change is retained in
+  [the answer-form baseline archive](./prompt-history/2026-11-12-answer-form-baseline/).
+  Archived and current question output must be captured separately before any
+  result editing if comparison is requested. Old-version comparison calls are
+  currently skipped at the user's request; offline tests cannot establish
+  generated question quality.
+
+### Separate TEST database for manual generation
+
+The default `npm run dev` / port 3000 configuration targets project
+`jaqyzbrvufknpsbcuqzw`, which contains existing participant research records.
+Do not use it for this test or change its credentials.
+The separately configured TEST project is `njtgxnlxlhxpbiekbgmv`.
+Only aggregate counts and schema metadata were inspected in the participant DB,
+not session/question/answer contents.
+
+On 2026-11-12, the TEST DB received 11 missing migrations:
+completion/briefing, explicit P/T classification, admin reads, follow-ups,
+the briefing follow-up snapshot and the six `20261112*` migrations.
+They were applied in one transaction with a before/after fingerprint of every
+existing column in all 20 pre-existing public tables. A mismatch would roll back
+the entire batch; all matched. Existing accounts remain unclassified, not
+reclassified as T or P. A migration ledger records only these actually applied
+migrations; earlier untracked historical migrations were not falsely registered.
+
+A **new synthetic T account** was created in TEST only. Its local credentials are
+in the gitignored `.test-runtime/question-generation-login.txt` file (mode 0600);
+never commit or copy that password into documentation. No existing account's
+password, session, image, question or answer was changed.
+
+Run the isolated, source-snapshot app:
+
+```sh
+npm run dev:test -- --question-generation
+```
+
+For an explicitly enabled live briefing instead of the mock, use
+`npm run dev:test -- --question-generation --live-briefing`. Completing a session
+then sends its confirmed context and selected saved answers to the configured
+question-generation model for a briefing (up to 4,000 output tokens). This mode
+first refines eligible saved text answers using the same model and the
+`sentence-refinement-v1.2` prompt, up to 4,000 output tokens per answer. It
+skips blank, skipped, already selected refined, and option-only answers.
+Automatic results and failures are recorded by answer and source hash, and
+retries reuse the result or original on failure without repeating the call.
+An uncertain in-flight request is not dispatched again. Each eligible original
+can add at most one refinement call per prompt version; follow-up answers can
+also qualify. Previously saved mock briefings remain unchanged and labeled as mock. Both the
+question-generation and live-briefing buttons can incur API costs.
+
+- Open `http://localhost:3001/test-environment` to verify the TEST project and
+  enabled mode, then follow its login link. Use the new T account's local
+  credentials, not participant credentials.
+- Add your own authorized image and design description through the normal
+  workflow, then explicitly press the question-generation button. Only that
+  action invokes the configured initial model (`OPENAI_QUESTION_GENERATION_MODEL`
+  from the local configuration) and incurs API cost. No comparison call runs.
+- The runtime uses current prompt `question-generation-v2.15` and schema
+  `why_box_question_generation_v2_3`. It saves candidates, versions and answer
+  forms to TEST. Answer autosave is persistent: wait for saving to finish, then
+  refresh or reopen the session to check it. Unlike the synthetic preview,
+  this test data survives refresh.
+- Initial generation alone is enabled. Context drafting, API regeneration,
+  answer-based follow-ups and sentence-refinement AI are disabled in this
+  launcher mode. Completion/briefing uses the existing **mock**, not real AI.
+  The ordinary application's limits and policies are not changed.
+- The launcher verifies the TEST project, clears inherited production settings,
+  never copies dotenv files into its snapshot, checks form-storage readiness,
+  and uses a separate Next cache/source tree. Port 3000 is left unchanged.
+  Restart the TEST launcher after code changes to refresh its source snapshot.
+- Readiness, normal T-account login and authenticated form/context metadata were
+  verified. A rollback-only TEST SQL check exercised current-prompt staging,
+  candidate commit, exact version metadata, user-only answer-field storage and
+  supplementary-context saving. All temporary check rows were rolled back.
+  No external AI request was made by setup or verification.
+- The TEST upload failure `UPLOAD-001` was traced to missing migration
+  `20261010235000_verified_direct_image_upload.sql` (`image.migration_required`,
+  `PGRST202`). It was subsequently applied to TEST only, retaining existing
+  records. The manual-generation launcher now also requires the verified-upload
+  finalizer before startup rather than allowing a broken upload screen.
+
+### Grounded intent and open verification methods (2026-11-13)
+
+- Replaced the shared unsupported-assumptions rule with a distinction between
+  visible elements and user-stated purposes. A visible keyword does not establish
+  why it was chosen; even a yes/no question must not introduce an unprovided
+  purpose. Follow-ups also must not treat a premise in an earlier AI question as
+  the user's own intent.
+- Integrated verification wording into the single-answer-task guidance. Keep
+  the check target concrete, but do not assume user testing, prescribe a task
+  or repeat a method across the question set. Use an existing user-stated plan
+  when available; otherwise let the user consider a context-appropriate check.
+  Direct comparison and actual-size inspection are possibilities, not mandatory
+  choices to list in every question.
+- Replaced the related negative constraint, verification example and self-check
+  entries rather than appending a competing rule block. The five-category
+  framework, types, answer forms/guides, candidates, ranking, targets and budgets
+  are unchanged. Schemas remain initial 2.1 / regeneration and follow-up 1.1.
+- Exact prior sources are in
+  [the grounding baseline](./prompt-history/2026-11-13-grounding-baseline/).
+  Runtime prompts retain only the latest files. Prompt versions are now initial
+  2.9 / regeneration and follow-up 1.4, matching their internal titles.
+- [The grounding version migration](./supabase/migrations/20261113010000_question_grounding_versions.sql)
+  widens the existing paired-version constraints and checked functions without
+  rewriting records or changing schema versions. Apply after the answer-form
+  migration; retain old pairs for historical/staged records. The existing
+  participant DB is not modified. TEST runtime snapshots must be restarted to
+  load the new instructions. No AI call is needed for these changes; actual
+  output quality still requires manual new generation.
+
+### Direct questions and context-aware selection (2026-11-13)
+
+- Replaced the reason-only wording rule with direct question tasks: ask what
+  matters, what is expected, or which alternatives are possible when that is the
+  selected type's purpose. Criteria/assumption review retains its own reflective
+  purpose. Neither reasons nor follow-up calls are automatically appended.
+- Reworked existing repetition guidance, negative constraints and ranking
+  criteria to distinguish user-stated purposes/reasons from unknowns. Explore
+  a relevant condition, possibility or comparison rather than asking for the same
+  explanation. Do not assume designers considered every basic issue; basic
+  questions remain eligible when needed. Avoid concentrating the selected set on
+  criteria/justification, without imposing fixed type quotas.
+- Verification wording names the confirmed medium and concrete expression or
+  property being checked, without guessing print/digital from an image or forcing
+  a method. Alternative questions distinguish fixed conditions from elements
+  varied hypothetically, then ask either for alternatives or predicted results,
+  not both.
+- Replaced examples for already-explained color choices, essential small text,
+  color/overlap reproduction in confirmed media, and fixed-color layout/typeface
+  exploration. Other specificity and grounded-intent examples remain; none are
+  fixed questions to copy.
+- Exact prior sources are in
+  [the question-purpose baseline](./prompt-history/2026-11-13-question-purpose-baseline/).
+  Versions are initial **2.10**, regeneration/follow-up **1.5**, with matching
+  internal titles. Schemas, framework categories/types, candidate count/rank
+  mechanism, targets, Reserve policy, budgets and answer forms are unchanged.
+- [The purpose version migration](./supabase/migrations/20261113020000_question_purpose_versions.sql)
+  extends only the existing allowed prompt/schema pairs and checked functions
+  after the grounding migration; historical records remain unchanged. The
+  participant DB is untouched. TEST source snapshots must be restarted.
+- No extra reads of participant answers or new AI calls were added. Initial
+  generation uses supplied work context, regeneration uses work context and
+  question history, and follow-up uses the supplied parent answer. Do not claim
+  access to answers absent from a flow's inputs. Testing of actual generated
+  wording is left to manual use of the current prompt.
+
+**Quality comparison (requires separately approved live calls):** use the same
+authorized/synthetic image bytes, image order, context, requested count, model,
+and generation settings for archived and revised prompts. Capture raw candidates,
+ranks, targets, metadata and usage before any edits; compare matched questions by
+target identifiability, clarity of answer task, number of distinct tasks,
+preservation of reflective purpose, unsupported assumptions and guide/template
+separation. Repeat on the same inputs to account for model variability. For
+replacements fix the exclusions too; for follow-ups fix the parent question,
+saved answer and supplemental context (no image is sent). Offline tests verify
+instructions and contracts, not actual model-quality improvement.
+
+With `npm run dev`, open `/dev/question-preview` to inspect the actual question
+screen using synthetic design, question, answer, and supplementary-context data.
+Question navigation, image pins, the design-description modal and answer inputs
+are interactive. Answers are kept **only in this mounted page's memory**; refresh
+resets them. DB saving, generation, refinement and session completion are disabled. The preview
+does not access participant records or call AI, and returns 404 outside development.
+Use numbered question controls or image pins to navigate; there is no separate
+other-question list or previous-conversation list. The image column's top
+"디자인 설명 보완" button opens a modal
+for the separately stored design explanation. Closing or pressing Escape retains
+its draft while the screen remains mounted; saving does not regenerate questions.
+The pin bubble's underlined "답변하기 >" control focuses the selected question's
+answer input and closes the bubble. It is disabled for non-editable answers,
+including locked historical answers.
+
+**Local checks without AI or remote DB access:**
+
+1. Run `npm run dev` and open `http://localhost:3000/dev/question-preview`.
+2. Question 1 shows free input; question 2 shows three blank numbered fields;
+   question 3 shows separate fields for the two synthetic course cards.
+3. Type into any field, navigate with question numbers/pins and return. The
+   draft remains; the pin bubble's answer control focuses the first answer field.
+4. Refresh to reset the in-memory preview. Context edits are also preview-only.
+5. Run the isolated PostgreSQL/React/API tests:
+
+   ```sh
+   node --test tests/question-answer-forms.test.mjs tests/answer-api.test.mjs \
+     tests/question-generation-server.test.mjs tests/question-regeneration-server.test.mjs \
+     tests/question-regeneration-integration.test.mjs tests/question-followup-api.test.mjs \
+     tests/question-generation-ui.test.mjs
+   npm run typecheck
+   ```
+
+   Database tests apply migrations only to disposable in-memory PGlite databases;
+   provider tests use mocks. No configured remote DB or model is invoked.
+
 ## Production release preflight (2026-10-10)
 
 ### Local UI and research export update (2026-10-11)
@@ -428,6 +805,7 @@ Production variables are:
 | `OPENAI_API_KEY` | Server-only secret; actual calls require separate approval |
 | `OPENAI_CONTEXT_DRAFT_ENABLED`, `OPENAI_CONTEXT_DRAFT_MODEL` | Independent optional context-draft provider |
 | `OPENAI_SENTENCE_REFINEMENT_ENABLED`, `OPENAI_SENTENCE_REFINEMENT_MODEL` | Independent optional sentence-refinement provider |
+| `OPENAI_COMPLETION_REFINEMENT_ENABLED` | Enable automatic completion refinement only after its migration; also requires the sentence-refinement provider settings |
 | `OPENAI_QUESTION_GENERATION_MODEL` | Required for live initial questions; no separate enable flag |
 | `OPENAI_QUESTION_REGENERATION_ENABLED`, `OPENAI_QUESTION_REGENERATION_MODEL` | Enable only after migration and provider approval |
 | `OPENAI_QUESTION_FOLLOWUP_ENABLED`, `OPENAI_QUESTION_FOLLOWUP_MODEL` | Independent follow-up provider; keep disabled until migration and provider approval |
@@ -945,7 +1323,7 @@ also registered CLI migration history.
   No fuzzy label matching, label rewrites or new research taxonomy is introduced.
   `answer_guides` is an ordered text array; `target` preserves the strict frozen
   `{type,image_indices,region}` object. Version metadata uses
-  `question-generation-v2.5`, schema name `why_box_question_generation_v2_0`,
+  `question-generation-v2.7`, schema name `why_box_question_generation_v2_0`,
   and framework `v1.0`.
 - Staging persists only validated candidates and safe metadata, not the raw OpenAI
   request/response, credentials, signed URLs or reasoning. Restaging identical
@@ -1024,7 +1402,7 @@ The returned model ID and provider creation time are persisted as generation met
 
 ### Active AI prompt revisions (2026-10-13, local only)
 
-- [Question generation v2.5](./src/lib/ai/prompts/question-generation-v2.5.ts)
+- [Question generation v2.7](./src/lib/ai/prompts/question-generation-v2.7.ts)
   retains its DB-compatible version with the approved 2026-10-13 wording revision,
   adding context-relevant design terminology
   rules and terminology self-checks. English is optional for clarification on
@@ -1333,7 +1711,7 @@ refinement remains disabled unless separately configured and approved.
 ### Phase 3-D-3: sentence refinement integration and mock validation
 
 The existing server-only Responses API provider uses the versioned
-`sentence-refinement-v1.1` prompt; obsolete prompt files have been removed.
+`sentence-refinement-v1.2` prompt; earlier source is retained only in the baseline archive.
 The prompt edits expression (spelling, grammar, repetition and flow) and may
 naturally professionalize colloquial or overly hesitant wording for describing
 design work. It preserves meaning, uncertainty, emotion, first-person viewpoint
@@ -1749,12 +2127,23 @@ validation and browser E2E. Keep that feature off until those gates pass.
 
 ## Response-based follow-up questions
 
-Follow-up questions use the separate `question-followup-v1.0` prompt and API.
+Follow-up questions use the separate `question-followup-v1.2` prompt and API.
+Question replacement uses `question-regeneration-v1.2`; its prompt wording is
+versioned separately from initial generation and preserves reserve-first
+replacement and existing call/slot limits.
 Only a participant's explicit button click can start one provider call. Each
 original question can have one generated follow-up; `no_followup` is deduplicated
 by the saved answer content, while a changed answer can be checked again. The
 original answer becomes read-only only after a follow-up is stored. Follow-up
 answers are independent and remain optional for session completion.
+Participants can save a revisioned work-context supplement separately from
+answers. Saving it does not regenerate questions; a later explicit replacement
+or follow-up request uses an immutable snapshot of the supplement. Follow-up
+snapshots are retained with prompt/model provenance and included in research
+exports. Apply the session-context supplement and follow-up snapshot migrations
+before enabling this feature in a database. If the supplement table is not yet
+available, the session page remains usable and clearly marks only this feature
+as unavailable; other database errors are still surfaced.
 
 ### Active-participant access (local implementation; deployment pending)
 

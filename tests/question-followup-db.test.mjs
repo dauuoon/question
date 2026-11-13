@@ -32,6 +32,8 @@ test("generated follow-up claims dispatch once, keeps lineage, and locks the ori
   const f = await pgliteFixture();
   try {
     const { question, answer } = await prepareAnsweredQuestion(f);
+    await f.exec(`${auth("authenticated")} select public.save_session_context_supplement(
+      ${quote(f.session)},'FOLLOW-UP CONTEXT SNAPSHOT',0);`);
     const request = await f.json(beginSQL(f, question, answer));
     assert.equal(request.status, "reserved");
     assert.ok(request.id);
@@ -59,12 +61,16 @@ test("generated follow-up claims dispatch once, keeps lineage, and locks the ori
     assert.equal(childAnswer, "This is a separate optional answer.");
     const savedRequest = await f.json(`select jsonb_build_object(
       'status',status,'model_id',model_id,'prompt_version',prompt_version,
-      'input_tokens',input_tokens,'output_tokens',output_tokens
+      'input_tokens',input_tokens,'output_tokens',output_tokens,
+      'supplemental_context_snapshot',supplemental_context_snapshot
     ) as result from public.question_followup_requests where id=${quote(request.id)};`);
     assert.deepEqual(savedRequest, {
       status: "generated", model_id: "WHY-BOX-FOLLOWUP-TEST",
       prompt_version: "question-followup-v1.0", input_tokens: 120, output_tokens: 24,
+      supplemental_context_snapshot: "FOLLOW-UP CONTEXT SNAPSHOT",
     });
+    await assert.rejects(f.exec(`${auth()} update public.question_followup_requests
+      set supplemental_context_snapshot='changed' where id=${quote(request.id)};`),/permission denied|Invalid follow-up request transition/);
   } finally { await f.close(); }
 });
 

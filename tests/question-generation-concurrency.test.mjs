@@ -113,7 +113,8 @@ test("native PostgreSQL independent connection and ordered migration verificatio
     for (const file of ["20261003201500_phase1_schema.sql", "20261003201600_phase1_rls.sql",
       "20261003233000_storage_upload_slots.sql", "20261004150000_participant_last_activity.sql",
       "20261005190000_session_context_save.sql", "20261005231000_context_draft_claim.sql",
-      "20261006031000_image_deletion.sql", "20261008031500_question_generation_foundation.sql"]) {
+      "20261006031000_image_deletion.sql", "20261008031500_question_generation_foundation.sql",
+      "20261112010000_question_generation_v2_6.sql", "20261112020000_session_context_supplements.sql"]) {
       await exec(read(`supabase/migrations/${file}`));
       console.log(`APPLIED_LOCAL_ONLY ${file}`);
       if (file === "20261005231000_context_draft_claim.sql") {

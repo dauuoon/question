@@ -148,7 +148,7 @@ test("nested follow-up inputs preserve selected versions and reject foreign or m
   const params=sessionBriefingParameters("mock-model",nested);
   const payload=JSON.parse(params.input[0].content[0].text);
   assert.deepEqual(payload.final_answers,[{
-    slot_index:1,answer:snapshot.answered_questions[0].answer.selected,
+    slot_index:1,question:snapshot.answered_questions[0].question_text,answer:snapshot.answered_questions[0].answer.selected,
     followup:{parent_question:snapshot.answered_questions[0].question_text,
       question:followup.question_text,answer:followup.answer.selected},
   }]);
@@ -170,6 +170,29 @@ test("nested follow-up inputs preserve selected versions and reject foreign or m
   assert.equal(JSON.parse(sessionBriefingParameters("mock",originalSelected).input[0].content[0].text)
     .final_answers[0].followup.answer,followup.answer.original);
   assert.deepEqual(contract.briefingInputSchema.parse(snapshot),snapshot);
+});
+
+test("briefing choice context separates selected options from writing and rejects inconsistent snapshots",()=>{
+  const {sessionBriefingParameters}=load("src/lib/ai/server/session-briefing-provider.ts");
+  const selected=structuredClone(snapshot);
+  const answer=selected.answered_questions[0].answer;
+  Object.assign(answer,{original:"색\n\n추가 생각",refined:null,current_version:"original",selected:"색\n\n추가 생각",
+    choice_selection:{selected_options:["색"],other:"",explanation:"추가 생각"}});
+  const payload=JSON.parse(sessionBriefingParameters("mock-model",selected).input[0].content[0].text);
+  assert.deepEqual(payload.final_answers[0].choice_context,{question:"What guided this choice?",
+    selected_options:["색"],other:"",explanation:"추가 생각"});
+  const invalid=structuredClone(selected);
+  invalid.answered_questions[0].answer.choice_selection.selected_options.push("미선택 보기");
+  assert.equal(contract.briefingInputSchema.safeParse(invalid).success,false);
+  selected.answered_questions[0].followup={
+    session_id:sessionId,question_id:"50000000-0000-4000-8000-000000000002",
+    parent_question_id:questionId,question_text:"무엇을 확인하나요?",
+    answer:{original:"경계",refined:null,current_version:"original",selected:"경계",
+      choice_selection:{selected_options:["경계"],other:"",explanation:""}},
+  };
+  const child=JSON.parse(sessionBriefingParameters("mock-model",selected).input[0].content[0].text)
+    .final_answers[0].followup;
+  assert.deepEqual(child.choice_context,{selected_options:["경계"],other:"",explanation:""});
 });
 
 test("v1.5 preserves the original rules and adds connected, non-authoritative follow-up interpretation only",()=>{
@@ -197,7 +220,7 @@ test("mock briefing provider is restricted to the explicit TEST project and neve
   assert.match(result.response.briefing_text, /제 답변은 “I wanted the interface to feel calm\.”입니다/u);
   assert.doesNotMatch(result.response.briefing_text, /사용자는|참여자는/u);
   assert.doesNotMatch(result.response.briefing_text, /focused decisions/u);
-  assert.match(contract.SESSION_BRIEFING_PROMPT_VERSION, /v1\.5$/);
+  assert.match(contract.SESSION_BRIEFING_PROMPT_VERSION, /v1\.6$/);
   const prompt = load("src/lib/ai/prompts/session-design-briefing-v1.5.ts").SESSION_DESIGN_BRIEFING_PROMPT;
   assert.match(prompt, /currently underway only when the confirmed context or a final answer says it is underway/u);
   assert.match(prompt, /Never convert a wish, possibility, or proposed next step/u);
@@ -266,6 +289,15 @@ test("repository treats a missing durable briefing request as an explicit not-fo
     error instanceof SessionBriefingRepositoryError && error.code === "BRIEFING-NOT-FOUND");
 });
 
+test("completion requires choice snapshot migration before freezing a session",async()=>{
+  const calls=[];
+  const client={rpc(name){calls.push(name);return {abortSignal:async()=>({data:null,error:{code:"PGRST202"}})};}};
+  const repo=createSessionBriefingRepository(client,client,"60000000-0000-4000-8000-000000000001");
+  await assert.rejects(repo.begin({session_id:sessionId,request_id:requestId,retry_of_request_id:null}),
+    error=>error instanceof SessionBriefingRepositoryError && error.code==="PGRST202");
+  assert.deepEqual(calls,["briefing_choice_snapshot_ready"]);
+});
+
 test("completion POST rejects cross-origin requests before auth or repository work and wires accepted TEST mock requests", async () => {
   let authCalls = 0;
   let serviceInput;
@@ -309,18 +341,19 @@ test("completion POST rejects cross-origin requests before auth or repository wo
   assert.equal(authCalls, 1);
 });
 
-  test("live briefing parameters send only confirmed context and selected final answers, not question assumptions or superseded answers", () => {
+  test("live briefing parameters include question context and selected answers without superseded answers", () => {
     const { sessionBriefingParameters, sessionBriefingConfig } = load("src/lib/ai/server/session-briefing-provider.ts");
     const params = sessionBriefingParameters("mock-model", snapshot);
     const payload = JSON.parse(params.input[0].content[0].text);
-    assert.deepEqual(payload.final_answers, [{ slot_index: 1, answer: snapshot.answered_questions[0].answer.selected }]);
+    assert.deepEqual(payload.final_answers, [{ slot_index: 1, question: snapshot.answered_questions[0].question_text,
+      answer: snapshot.answered_questions[0].answer.selected }]);
     assert.deepEqual(payload.participant_confirmed_context, { ...snapshot.design_context, context_ids: snapshot.context_ids });
-    assert.doesNotMatch(JSON.stringify(payload), /What guided|I wanted it to feel calm|question_id|session_id/);
+    assert.doesNotMatch(JSON.stringify(payload), /I wanted it to feel calm|question_id|session_id/);
     assert.match(params.instructions, /not instructions|Do not invent intentions|uncertainty|unsupported causal links/);
     assert.match(params.instructions,/first-person voice of the designer/i);
     assert.match(params.instructions,/Do not refer to the designer as "the participant" or "the user"/);
     assert.equal(params.instructions,
-      load("src/lib/ai/prompts/session-design-briefing-v1.5.ts").SESSION_DESIGN_BRIEFING_PROMPT);
+      load("src/lib/ai/prompts/session-design-briefing-v1.6.ts").SESSION_DESIGN_BRIEFING_PROMPT);
     assert.equal(params.store, false);
     assert.equal(params.stream, false);
     assert.equal(params.text.format.strict, true);
@@ -361,7 +394,7 @@ test("completion POST rejects cross-origin requests before auth or repository wo
     assert.equal(options.logLevel, "off");
     assert.equal(sent.model, "mock-model");
     assert.equal(sent.instructions, providerModule.sessionBriefingProvenance.prompt);
-    assert.equal(providerModule.sessionBriefingProvenance.prompt_version, "session-design-briefing-v1.5");
+    assert.equal(providerModule.sessionBriefingProvenance.prompt_version, "session-design-briefing-v1.6");
     assert.ok(requestOptions.signal instanceof globalThis.AbortSignal);
     const mock = providerModule.createSessionBriefingProvider({ ...env, NODE_ENV: "development" });
     assert.equal(mock.mode, "mock");

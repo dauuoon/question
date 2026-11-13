@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {randomUUID} from "node:crypto";
 import {readFileSync} from "node:fs";
-import {URL} from "node:url";
 import {typescriptLoader} from "./helpers/typescript-loader.mjs";
 import {pgliteFixture,owner,candidate} from "./question-regeneration-fixture.mjs";
 
@@ -10,7 +9,6 @@ const load=typescriptLoader();
 const {createRegenerationRepository}=load("src/lib/question-generation/regeneration-repository.ts");
 const {runQuestionRegeneration,recoverQuestionRegeneration}=load("src/lib/ai/server/question-regeneration-service.ts");
 const validation=load("src/lib/ai/server/question-regeneration-validation.ts");
-const provenanceMigration=readFileSync(new URL("../supabase/migrations/20261010002000_regeneration_dispatch_provenance.sql",import.meta.url),"utf8");
 function client(fixture,role) {
   return {rpc(name,args) {
     const promise=(async()=>{
@@ -33,7 +31,8 @@ function client(fixture,role) {
 }
 async function repositoryFixture(t) {
   const f=await pgliteFixture();t.after(()=>f.close());
-  await f.db.exec(provenanceMigration);
+  await f.exec(readFileSync(new URL("../supabase/migrations/20261113070000_single_choice_answers.sql",import.meta.url),"utf8"));
+  await f.exec(readFileSync(new URL("../supabase/migrations/20261113080000_choice_answer_history_access.sql",import.meta.url),"utf8"));
   return {f,repo:createRegenerationRepository(client(f,"authenticated"),client(f,"service_role"),owner)};
 }
 const inputFor=(row)=>({session_id:row.session_id,question_id:row.id,request_id:randomUUID(),
@@ -67,7 +66,7 @@ test("actual repository and service complete single-question RPC pipeline and re
   assert.equal(active.rows[0].n,5);
   const provenance=await f.db.query("select model_id,prompt_version,similarity_threshold from question_regeneration_dispatch_metadata");
   assert.equal(provenance.rows.length,1);assert.equal(provenance.rows[0].model_id,"mock-model");
-  assert.equal(provenance.rows[0].prompt_version,"question-regeneration-v1.0");
+  assert.equal(provenance.rows[0].prompt_version,"question-regeneration-v1.9");
   assert.equal(Number(provenance.rows[0].similarity_threshold),.82);
   await assert.rejects(f.db.exec("delete from question_regeneration_dispatch_metadata"),/immutable/);
 });

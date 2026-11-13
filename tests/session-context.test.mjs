@@ -201,7 +201,7 @@ function actionSetup({ changed = true, rpcError = null, user = true, role = "par
     } },
     "@/lib/activity/record": { recordParticipantActivity: async (kind) => { calls.activity.push(kind); return activity; } },
     "@/lib/session-context/input": input,
-    "@/lib/question-generation/view-contract": { questionCountSchema: require("zod").z.number().int().min(1).max(5) },
+    "@/lib/question-generation/view-contract": { selectableQuestionCountSchema: require("zod").z.number().int().min(2).max(5) },
   });
   return { calls, save: action.saveSessionContext };
 }
@@ -426,7 +426,7 @@ test("wizard retains component positions, validates Next, exposes progress and g
     "./session-context-form": { SessionContextForm },
     "@/lib/session-context/autosave": { Autosave: class { dispose() {} } },
     "@/lib/session-context/input": input,
-    "@/lib/question-generation/view-contract": { questionCountSchema: { safeParse: () => ({ success: true }) } },
+    "@/lib/question-generation/view-contract": { selectableQuestionCountSchema: { safeParse: () => ({ success: true }) } },
     "@/lib/question-generation/controller": { GenerationController: class { attach() {} detach() {} }, recoveryMessage: "TEST" },
     "./context-actions": { saveQuestionCount() {} },
     "./question-generation-loading": { QuestionGenerationLoading: () => null },
@@ -547,7 +547,7 @@ test("wizard restores session-specific steps before mounting AI form and explici
       "./image-uploader": { ImageUploader: () => null }, "./session-context-form": { SessionContextForm },
       "@/lib/session-context/autosave": { Autosave: class { dispose() {} } },
       "@/lib/session-context/input": input,
-      "@/lib/question-generation/view-contract": { questionCountSchema: { safeParse: () => ({ success: true }) } },
+      "@/lib/question-generation/view-contract": { selectableQuestionCountSchema: { safeParse: () => ({ success: true }) } },
       "@/lib/question-generation/controller": { GenerationController: class { attach() {} detach() {} }, recoveryMessage: "TEST" },
       "./context-actions": { saveQuestionCount() {} },
       "./question-generation-loading": { QuestionGenerationLoading: () => null },

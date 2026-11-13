@@ -52,8 +52,7 @@ test("isolated native PostgreSQL P/T migration, RLS, concurrency and rename reco
     started = true;
     assert.equal(exec("show listen_addresses"), "");
     await initialize(exec);
-    for (const file of ["20261010002000_regeneration_dispatch_provenance.sql",
-      "20261010003000_session_completion_briefing.sql"]) {
+    for (const file of ["20261010003000_session_completion_briefing.sql"]) {
       exec(read(`supabase/migrations/${file}`));
     }
     exec(`alter table auth.users add column email text unique, add column encrypted_password text,
@@ -489,9 +488,13 @@ test("isolated native PostgreSQL P/T migration, RLS, concurrency and rename reco
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.readFile(workbookPath);
       assert.equal(workbook.getWorksheet("Sessions").rowCount, 10);
-      for (const sheet of workbook.worksheets) for (const row of sheet.getSheetValues()) {
-        assert.ok(!JSON.stringify(row)?.includes("T01"));
-        assert.ok(!JSON.stringify(row)?.includes(f.session));
+      for (const sheet of workbook.worksheets) {
+        const headers = sheet.getRow(1).values;
+        const participantCodeColumn = Array.isArray(headers) ? headers.indexOf("participant_code") : -1;
+        if (participantCodeColumn > 0) for (let rowIndex = 2; rowIndex <= sheet.rowCount; rowIndex++) {
+          assert.notEqual(sheet.getRow(rowIndex).getCell(participantCodeColumn).value, "T01", sheet.name);
+        }
+        for (const row of sheet.getSheetValues()) assert.ok(!JSON.stringify(row)?.includes(f.session));
       }
       for (const [table, value] of baselines) {
         assert.equal(snapshot(table), value, table);

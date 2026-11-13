@@ -40,8 +40,9 @@ const config = load("src/lib/ai/server/question-generation-config.ts");
 const validation = load("src/lib/ai/server/question-generation-validation.ts");
 const provider = load("src/lib/ai/server/question-generation.ts");
 const service = load("src/lib/ai/server/question-generation-service.ts");
-const schema = load("src/lib/ai/schemas/question-generation-v2.0.ts").QUESTION_GENERATION_SCHEMA;
-const prompt = load("src/lib/ai/prompts/question-generation-v2.5.ts");
+const schema = load("src/lib/ai/schemas/question-generation-v2.3.ts").QUESTION_GENERATION_SCHEMA;
+const prompt = load("src/lib/ai/prompts/question-generation-v2.14.ts");
+const activePrompt = load("src/lib/ai/prompts/question-generation-v2.15.ts");
 const owner = "10000000-0000-4000-8000-000000000001";
 const other = "10000000-0000-4000-8000-000000000002";
 const sessionId = "20000000-0000-4000-8000-000000000001";
@@ -64,7 +65,7 @@ const candidates = () => Array.from({ length: 5 }, (_, i) => ({
   candidate_rank: i + 1, question_text: `TEST question ${i + 1}?`,
   content_principle: "사고의 자각과 외재화", question_type: "자기인식 질문",
   related_contexts: i === 0 ? ["시각적·형태적 표현을 살펴보고 싶어요"] : [],
-  answer_guides: [], target: { type: "image", image_indices: [1], region: null },
+  answer_guides: [], answer_form:null, target: { type: "image", image_indices: [1], region: null },
 }));
 const generated = () => ({ output: { questions: candidates() }, model: "returned-model", generatedAt: "2026-10-08T00:00:00.000Z" });
 const dependencies = (overrides = {}) => ({
@@ -148,34 +149,52 @@ test("strict validation rejects shape/ranks/enums/hierarchy/guides/targets and t
   assert.deepEqual(validation.normalizeRelatedContexts(["시각적·형태적 표현을 살펴보고 싶어요"], saved.context_ids), ["visual_form"]);
 });
 
-test("question terminology revision only adds expression rules and self-checks to the preserved framework", () => {
-  assert.equal(prompt.QUESTION_GENERATION_PROMPT_VERSION, "question-generation-v2.5");
-  const restored = read("src/lib/ai/prompts/question-generation-v2.5.ts")
-    .replace(/# DESIGN TERMINOLOGY AND EXPRESSION RULES[\s\S]*?(?=# ANSWER GUIDE RULES)/u, "")
-    .replace(/디자인 전문 용어와 문장 표현에 대해 추가로 확인한다\.[\s\S]*?(?=전체 질문 세트에 대해 확인한다\.)/u, "");
-  assert.equal(createHash("sha256").update(restored).digest("hex"),
-    "9dcb960bcf7ee04a9878829a1ea86492cbc0d40723f3d82bc33de33091081cae");
-  for (const rule of [
-    /전문 용어 사용보다 질문의 명료성과 자연스러움을 우선/u,
-    /이미지, 작업 맥락, 디자인 분야 및 현재 작업 단계와 직접 관련/u,
-    /무드보드\(Moodboard\), 타이포그래피\(Typography\), 레이아웃\(Layout\)/u,
-    /최초 등장은 후보 질문 5개 전체를 기준/u,
-    /모든 전문 용어나 질문에 영문을 기계적으로 병기하지 않는다/u,
-    /심미성, 시각적 완성도, 시각적 주목도, 일관성, 가독성/u,
-    /가독성, 시인성, 심미성.*동일한 의미로 취급하지 않는다/u,
-    /"볼더리한".*"볼드한", "굵은 서체"/u,
-    /하나의 질문에 지나치게 많은 전문 용어를 포함하지 않는다/u,
-    /특정 디자인 선택이 정답인 것처럼 유도/u,
-    /디자인 전문 용어가 정확하게 사용되었는가/u,
-    /영문 병기가 불필요하게 반복/u,
-    /질문의 의미를 바꾸지 않고 더 짧게/u,
-  ]) assert.match(prompt.QUESTION_GENERATION_PROMPT, rule);
+test("expression revision preserves framework, ranking and targets while replacing conflicting wording", () => {
+  assert.equal(prompt.QUESTION_GENERATION_PROMPT_VERSION, "question-generation-v2.14");
+  const previous=load("prompt-history/2026-11-12-expression-baseline/question-generation-v2.6.ts");
+  const section=(text,start,end)=>text.slice(text.indexOf(start),text.indexOf(end));
+  for(const [start,end] of [
+    ["# QUESTION CONTENT FRAMEWORK","# GENERATION PRINCIPLES"],
+    ["# IMAGE TARGET SELECTION","# FRAMEWORK METADATA"],
+  ])assert.equal(section(prompt.QUESTION_GENERATION_PROMPT,start,end),
+    section(previous.QUESTION_GENERATION_PROMPT,start,end));
+  assert.doesNotMatch(prompt.QUESTION_GENERATION_PROMPT,
+    /전문 용어를 우선하되|최초 등장 시 한글과 영문을 병기|# VISUAL REFERENCE AND QUESTION CLARITY|짧은 근거 질문을 이어 묻는다/);
+  assert.doesNotMatch(section(prompt.QUESTION_GENERATION_PROMPT,"# QUESTION STYLE EXAMPLES","# QUESTION GENERATION AND RANKING"),
+    /GOOD:\n"[^"]*(?:무엇이며|그 이유는 무엇인가요)/);
+});
+
+test("all question prompts use identical expression rules and matching internal versions",()=>{
+  const rules=load("src/lib/ai/question-expression-rules.ts").QUESTION_EXPRESSION_RULES;
+  const regeneration=load("src/lib/ai/prompts/question-regeneration-v1.9.ts");
+  const followup=load("src/lib/ai/prompts/question-followup-v1.9.ts");
+  for(const [text,version,title] of [
+    [prompt.QUESTION_GENERATION_PROMPT,prompt.QUESTION_GENERATION_PROMPT_VERSION,"QUESTION GENERATION"],
+    [regeneration.QUESTION_REGENERATION_PROMPT,regeneration.QUESTION_REGENERATION_PROMPT_VERSION,"QUESTION REGENERATION"],
+    [followup.QUESTION_FOLLOWUP_PROMPT,followup.QUESTION_FOLLOWUP_PROMPT_VERSION,"QUESTION FOLLOWUP"],
+  ]) {
+    assert.ok(text.includes(rules));
+    assert.equal(text.split("# QUESTION EXPRESSION RULES").length,2);
+    assert.ok(text.startsWith(`# WHY BOX ${title} PROMPT ${version.split("-").at(-1)}`));
+    for(const clause of [
+      /쉬운 한국어를 기본으로 하되/,
+      /무엇에 대한 가정이나 기준인지 구체적으로/,
+      /대상을 확실히 식별하기 어렵다면.*만들어내지 않는다/,
+      /대상 선택·이유 설명·비교를 한꺼번에 요구하지 않는다/,
+      /두 기준이 실제로 충돌한다는 근거가 없다면/,
+      /기준 탐색을 단순 선택으로, 가정 검토를 디자인 평가로 바꾸지 않는다/,
+      /모든 질문에 고정 개수나 양식을 적용하지 않는다/,
+      /빈 답변 양식을 answer_guides나 question_text에 넣지 않는다/,
+    ])assert.match(text,clause);
+  }
+  assert.match(followup.QUESTION_FOLLOWUP_PROMPT,/후속 질문에는 디자인 이미지가 전달되지 않습니다/);
+  assert.match(regeneration.QUESTION_REGENERATION_PROMPT,/전체 질문 세트를 다시 생성하지 마세요/);
 });
 
 test("Responses request uses revised prompt with unchanged schema, saved context, image order and five candidates for every N", async () => {
   for (const n of [1, 3, 5]) {
     const params = provider.questionGenerationParameters("configured-model", snapshot(n), ["signed-1", "signed-2"]);
-    assert.equal(params.instructions, prompt.QUESTION_GENERATION_PROMPT);
+    assert.equal(params.instructions, activePrompt.QUESTION_GENERATION_PROMPT);
     assert.deepEqual(params.text.format, { type: "json_schema", ...schema });
     assert.equal(params.store, false); assert.equal(params.stream, false);
     assert.equal(params.model, "configured-model");
@@ -202,7 +221,7 @@ test("Responses request uses revised prompt with unchanged schema, saved context
   const result = await fake.generateQuestions({ apiKey: "mock-only", model: "configured-model" }, snapshot(), ["a", "b"], signal);
   assert.equal(result.model, "actual-model");
   assert.equal(sdkCalls.length, 1); assert.equal(sdkCalls[0].settings.maxRetries, 0);
-  assert.equal(sdkCalls[0].params.instructions, prompt.QUESTION_GENERATION_PROMPT);
+  assert.equal(sdkCalls[0].params.instructions, activePrompt.QUESTION_GENERATION_PROMPT);
   assert.equal(sdkCalls[0].settings.logLevel, "off"); assert.equal(sdkCalls[0].settings.timeout, 60000);
   assert.equal(sdkCalls[0].options.signal, signal);
 });
@@ -322,6 +341,23 @@ async function databaseFixture(n = 3) {
     "20261003233000_storage_upload_slots.sql", "20261004150000_participant_last_activity.sql",
     "20261005190000_session_context_save.sql", "20261005231000_context_draft_claim.sql",
     "20261006031000_image_deletion.sql", "20261008031500_question_generation_foundation.sql",
+    "20261008220000_answer_refinement_version.sql", "20261009002000_question_actions.sql",
+    "20261010001500_question_regeneration.sql", "20261010002000_regeneration_dispatch_provenance.sql",
+    "20261012230000_question_followups.sql",
+    "20261112010000_question_generation_v2_6.sql",
+    "20261112020000_session_context_supplements.sql",
+    "20261112030000_question_regeneration_v1_1.sql",
+    "20261112040000_question_followup_context_snapshots.sql",
+    "20261112050000_question_expression_versions.sql",
+    "20261112060000_question_answer_forms.sql",
+    "20261113010000_question_grounding_versions.sql",
+    "20261113020000_question_purpose_versions.sql",
+    "20261113030000_question_natural_expression_versions.sql",
+    "20261113040000_question_text_role_versions.sql",
+    "20261113050000_question_choice_answers.sql",
+    "20261113070000_single_choice_answers.sql",
+    "20261113080000_choice_answer_history_access.sql",
+    "20261114020000_function_understanding_versions.sql",
   ].entries()) await db.exec(i === 0 ? read(`supabase/migrations/${file}`).replace(
     "create extension if not exists pgcrypto with schema extensions;", "") : read(`supabase/migrations/${file}`));
   await db.exec(`insert into auth.users values('${owner}'),('${other}');
@@ -404,7 +440,7 @@ for (const n of [1, 3, 5]) test(`actual RPC-backed server pipeline N=${n}: five 
     const first = await run(s.repo, input, deps);
     assert.equal(first.question_ids.length, n);
     assert.equal(s.calls.find(call => call.name === "stage_question_generation_candidates").args.p_prompt_version,
-      prompt.QUESTION_GENERATION_PROMPT_VERSION);
+      activePrompt.QUESTION_GENERATION_PROMPT_VERSION);
     const counts = (await s.db.query(`select
       (select count(*)::int from public.question_candidates) candidates,
       (select count(*)::int from public.questions) questions,

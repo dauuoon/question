@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { answerRevisionSchema } from "../answers/revision";
+import { ANSWER_FORM_WITH_SINGLE_CHOICE_JSON_SCHEMA, answerFormSchema } from "../answers/form";
 
-export const QUESTION_FOLLOWUP_SCHEMA_VERSION = "why_box_question_followup_v1_0";
+export const QUESTION_FOLLOWUP_SCHEMA_VERSION = "why_box_question_followup_v1_3";
 export const QUESTION_FOLLOWUP_SCHEMA = {
   name: QUESTION_FOLLOWUP_SCHEMA_VERSION,
   strict: true,
@@ -10,8 +11,9 @@ export const QUESTION_FOLLOWUP_SCHEMA = {
     properties: {
       outcome: { type: "string", enum: ["generated", "no_followup"] },
       followup_question: { type: ["string", "null"] },
+      answer_form: ANSWER_FORM_WITH_SINGLE_CHOICE_JSON_SCHEMA,
     },
-    required: ["outcome", "followup_question"],
+    required: ["outcome", "followup_question", "answer_form"],
     additionalProperties: false,
   },
 } as const;
@@ -19,9 +21,16 @@ export const QUESTION_FOLLOWUP_SCHEMA = {
 export const questionFollowupOutputSchema = z.object({
   outcome: z.enum(["generated", "no_followup"]),
   followup_question: z.string().trim().min(1).max(2000).nullable(),
+  answer_form: answerFormSchema.nullable(),
 }).strict().superRefine((value, context) => {
+  if(value.answer_form?.kind==="choice" && value.answer_form.max_selections!==1) {
+    context.addIssue({code:"custom",message:"A new choice form must allow one selection"});
+  }
   if ((value.outcome === "generated") !== (value.followup_question !== null)) {
     context.addIssue({ code: "custom", message: "Outcome and follow-up question do not match" });
+  }
+  if(value.outcome==="no_followup" && value.answer_form!==null) {
+    context.addIssue({code:"custom",message:"No follow-up cannot have an answer form"});
   }
 });
 

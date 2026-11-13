@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { URL } from "node:url";
+import { typescriptLoader } from "./helpers/typescript-loader.mjs";
 import {
   pgliteFixture, owner, other, auth, quote, answerSQL,
 } from "./question-regeneration-fixture.mjs";
@@ -27,7 +29,77 @@ const finish = (f, requestId, text = "The design connects the user's goals with 
 async function apply(f) {
   await f.db.exec(readFileSync(new URL(`../supabase/migrations/${migration}`, import.meta.url), "utf8"));
   await f.db.exec(readFileSync(new URL("../supabase/migrations/20261023000000_briefing_followup_snapshot.sql", import.meta.url), "utf8"));
+  await f.db.exec(readFileSync(new URL("../supabase/migrations/20261113060000_briefing_choice_snapshot.sql", import.meta.url), "utf8"));
 }
+
+for(const explanation of ["","투명도에 따라 색이 어떻게 달라지는지 확인합니다."]) {
+  test(`choice answer ${explanation?"with text":"alone"} reaches saved mock briefing without other options`,async t=>{
+    const form={kind:"choice",title:"비교할 부분",labels:["겹친 부분의 색","도형의 경계","직접 입력","짧은 설명"],
+      max_selections:2,explanation_prompt:"어떤 차이를 확인하나요?"};
+    const f=await pgliteFixture(3,[form],"question-generation-v2.13");t.after(()=>f.close());
+    await apply(f);
+    const permissions=(await f.db.query(`select
+      has_function_privilege('authenticated','public.briefing_choice_selection(jsonb,text[],text)','EXECUTE') as helper,
+      has_function_privilege('authenticated','public.session_briefing_input_snapshot(uuid)','EXECUTE') as snapshot,
+      has_function_privilege('authenticated','public.briefing_choice_snapshot_ready()','EXECUTE') as ready`)).rows[0];
+    assert.deepEqual(permissions,{helper:false,snapshot:false,ready:true});
+    const text=["겹친 부분의 색",explanation].filter(Boolean).join("\n\n");
+    await f.exec(`${auth("authenticated")} insert into public.answers(question_id,participant_id,original_answer,original_answer_fields)
+      values(${quote(f.questions[0].id)},${quote(owner)},${quote(text)},
+        array['겹친 부분의 색','','',${quote(explanation)}]);`);
+    await skip(f,f.questions[1],"70000000-0000-4000-8000-000000000301");
+    await skip(f,f.questions[2],"70000000-0000-4000-8000-000000000302");
+    const requestId="40000000-0000-4000-8000-000000000301";
+    const begun=await begin(f,requestId);
+    assert.equal(begun.accepted,true);
+    const snap=begun.input_snapshot;
+    assert.deepEqual(snap.answered_questions[0].answer.choice_selection,
+      {selected_options:["겹친 부분의 색"],other:"",explanation});
+    const load=typescriptLoader();
+    const provider=load("src/lib/ai/server/session-briefing-provider.ts");
+    const payload=JSON.parse(provider.sessionBriefingParameters("test-model",snap).input[0].content[0].text);
+    assert.deepEqual(payload.final_answers[0].choice_context,
+      {question:"Initial question 1?",selected_options:["겹친 부분의 색"],other:"",explanation});
+    assert.doesNotMatch(JSON.stringify(payload),/도형의 경계|직접 입력|짧은 설명|비교할 부분/);
+    const mock=provider.createMockSessionBriefingProvider({NODE_ENV:"development",SESSION_BRIEFING_MOCK_ENABLED:"true",
+      NEXT_PUBLIC_SUPABASE_URL:"https://njtgxnlxlhxpbiekbgmv.supabase.co"});
+    const output=await mock.generate(snap);
+    assert.match(output.response.briefing_text,/겹친 부분의 색/);
+    if(explanation)assert.ok(output.response.briefing_text.includes(explanation));
+    assert.doesNotMatch(output.response.briefing_text,/도형의 경계|직접 입력|짧은 설명|비교할 부분/);
+    assert.equal(await dispatch(f,requestId),true);
+    assert.equal((await finish(f,requestId,output.response.briefing_text)).state,"completed");
+    assert.equal(await f.json(`select to_jsonb(summary_text) as result from public.sessions where id=${quote(f.session)}`),
+      output.response.briefing_text);
+  });
+}
+
+test("choice answer on a follow-up is frozen separately in the briefing snapshot",async t=>{
+  const f=await pgliteFixture(3);t.after(()=>f.close());
+  await apply(f);
+  const parent=f.questions[0],text="기존에 작성한 생각";
+  await answer(f,parent,text);
+  const revision=(await f.db.query("select updated_at::text revision from answers where question_id=$1",[parent.id])).rows[0].revision;
+  const request=await f.json(`${auth()} select public.begin_question_followup(${quote(f.session)},${quote(parent.id)},
+    ${quote(randomUUID())},${quote(owner)},${quote(revision)},${quote(createHash("sha256").update(text).digest("hex"))},
+    ${quote(text)},'question-followup-v1.8') as result;`);
+  const form={kind:"choice",title:"비교",labels:["색","경계","직접 입력","짧은 설명"],
+    max_selections:2,explanation_prompt:"어떤 차이를 확인하나요?"};
+  await f.exec(`${auth()} select public.dispatch_question_followup(${quote(request.id)},'LOCAL-MOCK');`);
+  const finished=await f.json(`${auth()} select public.finish_question_followup(${quote(request.id)},'generated',
+    '무엇을 확인하나요?','LOCAL-MOCK',10,20,null,${quote(JSON.stringify(form))}::jsonb) as result;`);
+  await f.exec(`${auth("authenticated")} insert into answers(question_id,participant_id,original_answer,original_answer_fields)
+    values(${quote(finished.result_question_id)},${quote(owner)},'색',array['색','','','']);`);
+  await skip(f,f.questions[1],"70000000-0000-4000-8000-000000000311");
+  await skip(f,f.questions[2],"70000000-0000-4000-8000-000000000312");
+  const begun=await begin(f,"40000000-0000-4000-8000-000000000311");
+  assert.deepEqual(begun.input_snapshot.answered_questions[0].followup.answer.choice_selection,
+    {selected_options:["색"],other:"",explanation:""});
+  const provider=typescriptLoader()("src/lib/ai/server/session-briefing-provider.ts");
+  const payload=JSON.parse(provider.sessionBriefingParameters("test-model",begun.input_snapshot).input[0].content[0].text);
+  assert.deepEqual(payload.final_answers[0].followup.choice_context,{selected_options:["색"],other:"",explanation:""});
+  assert.doesNotMatch(JSON.stringify(payload),/경계|직접 입력|짧은 설명/);
+});
 
 test("completion validates active slots and selected answers before freezing the session", async () => {
   const f = await pgliteFixture(3);

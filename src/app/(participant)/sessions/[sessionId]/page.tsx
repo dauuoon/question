@@ -26,10 +26,27 @@ export default async function ParticipantSessionPage({
     .eq("id", sessionId).eq("participant_id", user.id).maybeSingle();
   if (error) throw new Error("Unable to load this reflection session.");
   if (!session) notFound();
+  const { data: supplement, error: supplementError } = await supabase
+    .from("session_context_supplement_revisions")
+    .select("revision,context_text")
+    .eq("session_id", sessionId)
+    .order("revision", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const contextSupplementAvailable = !supplementError;
+  if (supplementError && !["42P01", "PGRST205"].includes(supplementError.code ?? "")) {
+    throw new Error("Unable to load saved work-context supplements.");
+  }
+  const initialContextSupplement = {
+    revision: supplement?.revision ?? 0,
+    text: supplement?.context_text ?? "",
+  };
   const generation = await readGenerationView(supabase, user.id, sessionId, session);
   if (generation.state === "completed") return <section className="content-stack">
     <ActivityMarker path={`/sessions/${sessionId}`} participantId={user.id} />
-    <QuestionResult result={generation} sessionStatus={session.status} />
+    <QuestionResult result={generation} sessionId={sessionId} sessionStatus={session.status}
+      initialContextSupplement={initialContextSupplement}
+      contextSupplementAvailable={contextSupplementAvailable} />
   </section>;
   if (session.status === "completed") throw new Error("Completed session has no saved question result.");
   const { data: contexts, error: contextError } = await supabase.from("session_contexts")
@@ -42,6 +59,8 @@ export default async function ParticipantSessionPage({
       {activityError === "SAVE-002" ? <Toast error message={`${errorCatalog["SAVE-002"].participantMessage} (SAVE-002)`} /> : null}
       <SessionWizard key={sessionId} sessionId={sessionId} initialGeneration={generation}
         sessionStatus={session.status}
+        initialContextSupplement={initialContextSupplement}
+        contextSupplementAvailable={contextSupplementAvailable}
         initialSavedAt={session.updated_at} initial={{
         primary_category_id: session.primary_category_id,
         subcategory_id: session.subcategory_id,

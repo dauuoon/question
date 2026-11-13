@@ -80,17 +80,56 @@ export function testRuntimeEnvironment(test,inherited=process.env) {
     OPENAI_API_KEY:"",
     OPENAI_SENTENCE_REFINEMENT_ENABLED:"false",
     OPENAI_SENTENCE_REFINEMENT_MODEL:"",
+    OPENAI_COMPLETION_REFINEMENT_ENABLED:"false",
     OPENAI_CONTEXT_DRAFT_ENABLED:"false",
     OPENAI_CONTEXT_DRAFT_MODEL:"",
     OPENAI_QUESTION_GENERATION_MODEL:"",
     OPENAI_QUESTION_REGENERATION_ENABLED:"false",
     OPENAI_QUESTION_REGENERATION_MODEL:"",
+    OPENAI_QUESTION_FOLLOWUP_ENABLED:"false",
+    OPENAI_QUESTION_FOLLOWUP_MODEL:"",
     SESSION_BRIEFING_MOCK_ENABLED:"true",
     OPENAI_SESSION_BRIEFING_ENABLED:"false",
     OPENAI_SESSION_BRIEFING_MODEL:"",
     SESSION_IMAGE_DELETION_ENABLED:"false",
     NEXT_TELEMETRY_DISABLED:"1",
   };
+}
+
+export function questionGenerationEnvironment(base,local) {
+  if(base.NODE_ENV!=="development"||base.NEXT_PUBLIC_SUPABASE_URL!==`https://${TEST_REF}.supabase.co`) {
+    throw new Error("Initial generation requires the isolated TEST runtime");
+  }
+  assertKey(base.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,"anon");
+  assertKey(base.SUPABASE_SERVICE_ROLE_KEY,"service_role");
+  if(!local.OPENAI_API_KEY?.trim()||!local.OPENAI_QUESTION_GENERATION_MODEL?.trim()) {
+    throw new Error("Missing initial question generation key/model");
+  }
+  return {...base,
+    OPENAI_API_KEY:local.OPENAI_API_KEY,
+    OPENAI_QUESTION_GENERATION_MODEL:local.OPENAI_QUESTION_GENERATION_MODEL,
+    OPENAI_SENTENCE_REFINEMENT_ENABLED:"false",OPENAI_SENTENCE_REFINEMENT_MODEL:"",
+    OPENAI_CONTEXT_DRAFT_ENABLED:"false",OPENAI_CONTEXT_DRAFT_MODEL:"",
+    OPENAI_QUESTION_REGENERATION_ENABLED:"false",OPENAI_QUESTION_REGENERATION_MODEL:"",
+    OPENAI_QUESTION_FOLLOWUP_ENABLED:"false",OPENAI_QUESTION_FOLLOWUP_MODEL:"",
+    OPENAI_SESSION_BRIEFING_ENABLED:"false",OPENAI_SESSION_BRIEFING_MODEL:"",
+    SESSION_BRIEFING_MOCK_ENABLED:"true",
+    WHY_BOX_TEST_QUESTION_GENERATION:"enabled",
+  };
+}
+
+export function liveBriefingEnvironment(base) {
+  if(base.NODE_ENV!=="development"||base.NEXT_PUBLIC_SUPABASE_URL!==`https://${TEST_REF}.supabase.co`||
+    base.WHY_BOX_TEST_QUESTION_GENERATION!=="enabled"||!base.OPENAI_API_KEY?.trim()||
+    !base.OPENAI_QUESTION_GENERATION_MODEL?.trim()) {
+    throw new Error("Live briefing requires the isolated question generation TEST runtime");
+  }
+  assertKey(base.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,"anon");
+  assertKey(base.SUPABASE_SERVICE_ROLE_KEY,"service_role");
+  return {...base,SESSION_BRIEFING_MOCK_ENABLED:"false",OPENAI_SESSION_BRIEFING_ENABLED:"true",
+    OPENAI_SESSION_BRIEFING_MODEL:base.OPENAI_QUESTION_GENERATION_MODEL,
+    OPENAI_COMPLETION_REFINEMENT_ENABLED:"true",OPENAI_SENTENCE_REFINEMENT_ENABLED:"true",
+    OPENAI_SENTENCE_REFINEMENT_MODEL:base.OPENAI_QUESTION_GENERATION_MODEL,WHY_BOX_TEST_LIVE_BRIEFING:"enabled"};
 }
 
 async function checkPort() {
@@ -106,12 +145,18 @@ export async function startTestRuntime() {
   let env=testRuntimeEnvironment(test);
   const e2e=process.argv.includes("--refinement-e2e");
   const researcher=process.argv.includes("--refinement-researcher");
+  const questions=process.argv.includes("--question-generation");
+  const liveBriefing=process.argv.includes("--live-briefing");
+  if(liveBriefing&&!questions)throw new Error("Live briefing requires --question-generation");
+  if(questions&&(e2e||researcher||process.argv.includes("--approve-live-refinement"))) {
+    throw new Error("Question generation and refinement TEST modes cannot be combined");
+  }
   if(e2e&&researcher)throw new Error("Choose only one TEST refinement mode");
   if(process.argv.includes("--approve-live-refinement")&&!researcher)throw new Error("Researcher approval requires researcher mode");
   if(researcher) {
     const fixture=JSON.parse(readFileSync(join(root,".test-runtime/researcher-refinement.json"),"utf8"));
     const approved=process.argv.includes("--approve-live-refinement");
-    const prompt=readFileSync(join(root,"src/lib/ai/prompts/sentence-refinement-v1.1.ts"),"utf8")
+    const prompt=readFileSync(join(root,"src/lib/ai/prompts/sentence-refinement-v1.2.ts"),"utf8")
       .match(/export const SENTENCE_REFINEMENT_PROMPT\s*=\s*`([\s\S]*?)`;/u)?.[1];
     if(!prompt)throw new Error("Refinement prompt format changed");
     const budget=join(root,".test-runtime/researcher-refinement-budget");
@@ -144,10 +189,29 @@ export async function startTestRuntime() {
     env.OPENAI_SENTENCE_REFINEMENT_ENABLED="true";
     env.OPENAI_SENTENCE_REFINEMENT_MODEL="gpt-6-astra";
     env.WHY_BOX_TEST_REFINEMENT_BUDGET=budget;
-    const prompt=readFileSync(join(root,"src/lib/ai/prompts/sentence-refinement-v1.1.ts"),"utf8")
+    const prompt=readFileSync(join(root,"src/lib/ai/prompts/sentence-refinement-v1.2.ts"),"utf8")
       .match(/export const SENTENCE_REFINEMENT_PROMPT\s*=\s*`([\s\S]*?)`;/u)?.[1];
     if(!prompt)throw new Error("Refinement prompt format changed; E2E startup blocked");
     env.WHY_BOX_TEST_PROMPT_HASH=createHash("sha256").update(prompt).digest("hex");
+  }
+  if(questions) {
+    env=questionGenerationEnvironment(env,parseEnv(readFileSync(join(root,".env.local"),"utf8")));
+    if(liveBriefing)env=liveBriefingEnvironment(env);
+    const readiness=await globalThis.fetch(`${env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/rpc/choice_answer_history_access_ready`,{
+      method:"POST",headers:{apikey:env.SUPABASE_SERVICE_ROLE_KEY,
+        Authorization:`Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,"Content-Type":"application/json"},
+      body:"{}",signal:globalThis.AbortSignal.timeout(15_000),
+    });
+    if(!readiness.ok||await readiness.json()!==true)throw new Error("TEST answer-form migrations are not ready");
+    const schema=await globalThis.fetch(`${env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/`,{
+      headers:{apikey:env.SUPABASE_SERVICE_ROLE_KEY,Authorization:`Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+        Accept:"application/openapi+json"},signal:globalThis.AbortSignal.timeout(15_000),
+    });
+    if(!schema.ok)throw new Error("TEST upload schema verification failed");
+    const description=await schema.json();
+    if(!description.paths?.["/rpc/finish_verified_image_upload"]) {
+      throw new Error("TEST verified direct-upload migration is not ready");
+    }
   }
   const response=await globalThis.fetch(`${env.NEXT_PUBLIC_SUPABASE_URL}/auth/v1/settings`,{
     headers:{apikey:env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY},
@@ -183,10 +247,12 @@ export async function startTestRuntime() {
   }
   symlinkSync(join(root,"node_modules"),join(app,"node_modules"),"dir");
   writeFileSync(join(staging,"latest.json"),JSON.stringify({
-    app,projectRef:TEST_REF,url:`http://${TEST_HOST}:${TEST_PORT}`,aiEnabled:e2e||env.WHY_BOX_RESEARCHER_REFINEMENT==="approved",
+    app,projectRef:TEST_REF,url:`http://${TEST_HOST}:${TEST_PORT}`,aiEnabled:questions||e2e||env.WHY_BOX_RESEARCHER_REFINEMENT==="approved",
+    questionGenerationEnabled:questions,
   },null,2)+"\n");
   console.log(`TEST project verified: ${TEST_REF}; Auth HTTP ${response.status}`);
-  console.log(`TEST-only app: http://${TEST_HOST}:${TEST_PORT}; ${env.WHY_BOX_RESEARCHER_REFINEMENT==="approved"?
+  console.log(`TEST-only app: http://${TEST_HOST}:${TEST_PORT}; ${questions?
+    `manual initial question generation enabled; answers persist to TEST DB; briefing ${liveBriefing?"live with automatic refinement":"Mock"}; other AI disabled`:env.WHY_BOX_RESEARCHER_REFINEMENT==="approved"?
     "researcher refinement only, durable three-call budget, briefing Mock enabled":e2e?
     "sentence refinement only, durable one-call budget, briefing Mock enabled":"external AI disabled, briefing Mock enabled"}; isolated source/cache`);
   const child=spawn(process.execPath,[join(root,"node_modules/next/dist/bin/next"),

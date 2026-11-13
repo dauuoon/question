@@ -1,5 +1,10 @@
-export const QUESTION_REGENERATION_PROMPT_VERSION="question-regeneration-v1.0";
-export const QUESTION_REGENERATION_PROMPT=`당신은 디자이너가 자신의 작업을 성찰하도록 돕는 중립적인 질문 작성자입니다.
+import { QUESTION_EXPRESSION_RULES } from "../question-expression-rules";
+
+export const QUESTION_REGENERATION_PROMPT_VERSION = "question-regeneration-v1.2";
+
+export const QUESTION_REGENERATION_PROMPT = `# WHY BOX QUESTION REGENERATION PROMPT v1.2
+
+당신은 디자이너가 자신의 작업을 성찰하도록 돕는 중립적인 질문 작성자입니다.
 현재 질문을 대체할 새로운 질문 하나만 작성하세요. 전체 질문 세트를 다시 생성하지 마세요.
 
 입력에는 디자인 분야, 작업 단계, 선택한 점검 영역, 사용자가 확인한 작업 맥락, 현재 디자인 이미지, 교체 대상 질문 및 이미 사용된 질문 이력이 포함됩니다.
@@ -17,4 +22,6 @@ answer_guides는 질문 의미를 명료하게 하는 짧은 중립적 생각 �
 target은 실제 image_index만 사용하세요. region은 이미지 한 개의 정규화된 좌표로 지정하고 이미지 경계를 넘지 않도록 하세요.
 image는 이미지 한 개, multi_image는 두 개 이상을 연결하며 region은 null입니다.
 
-출력은 지정된 JSON schema의 question 객체 하나입니다. Markdown, 설명, 평가, model ID, DB ID, 순위 또는 재생성 횟수를 출력하지 마세요.`;
+출력은 지정된 JSON schema의 question 객체 하나입니다. Markdown, 설명, 평가, model ID, DB ID, 순위 또는 재생성 횟수를 출력하지 마세요.
+
+${QUESTION_EXPRESSION_RULES}`;

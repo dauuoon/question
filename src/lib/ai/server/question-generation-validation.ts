@@ -1,9 +1,10 @@
 import "server-only";
 import { z } from "zod";
-import { QUESTION_GENERATION_SCHEMA } from "../schemas/question-generation-v2.0";
+import { QUESTION_GENERATION_SCHEMA } from "../schemas/question-generation-v2.3";
 import { QuestionGenerationError } from "../question-generation-contract";
 import { draftInputSchema } from "../context-draft-contract";
 import { REFLECTION_CONTEXTS } from "../../constants/research-options";
+import { answerFormSchema } from "../../answers/form";
 
 const fields = QUESTION_GENERATION_SCHEMA.schema.properties.questions.items.properties;
 const regionFields = fields.target.properties.region.anyOf[0].properties;
@@ -20,6 +21,7 @@ export const candidateSchema = z.object({
   question_type: z.enum(fields.question_type.enum),
   related_contexts: z.array(z.string()),
   answer_guides: z.array(z.string()).min(fields.answer_guides.minItems).max(fields.answer_guides.maxItems),
+  answer_form: answerFormSchema.nullable().optional(),
   target: z.object({
     type: z.enum(fields.target.properties.type.enum),
     image_indices: z.array(z.number().int().min(fields.target.properties.image_indices.items.minimum)
@@ -73,7 +75,9 @@ export function validateCandidateDetails(candidate:QuestionCandidate,
   input:GenerationAttempt["input_snapshot"],images:GenerationAttempt["image_snapshot"]) {
   if(!candidate.question_text.trim()||candidate.question_text.includes("\0")||
     !hierarchy[candidate.content_principle].includes(candidate.question_type)||
-    candidate.answer_guides.some(guide=>!guide.trim()||guide.includes("\0"))) {
+    candidate.answer_guides.some(guide=>!guide.trim()||guide.includes("\0")) ||
+    (candidate.answer_form && candidate.answer_guides.length > 0) ||
+    (candidate.answer_form?.kind==="choice" && candidate.answer_form.max_selections!==1)) {
     throw new QuestionGenerationError("QGEN-VALIDATION");
   }
   const contexts=normalizeRelatedContexts(candidate.related_contexts,input.context_ids);
@@ -91,6 +95,9 @@ export function validateQuestionOutput(output: unknown, attempt: GenerationAttem
   const parsed = outputSchema.safeParse(output);
   if (!parsed.success) throw new QuestionGenerationError("QGEN-VALIDATION");
   const candidates = parsed.data.questions;
+  if (candidates.some(candidate => candidate.answer_form === undefined)) {
+    throw new QuestionGenerationError("QGEN-VALIDATION");
+  }
   // Leave room for PostgreSQL jsonb whitespace in its 256 KiB payload limit.
   if (Buffer.byteLength(JSON.stringify(candidates)) > 240 * 1024) throw new QuestionGenerationError("QGEN-VALIDATION");
   const texts = new Set<string>();

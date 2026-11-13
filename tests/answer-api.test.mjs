@@ -39,7 +39,7 @@ const answerError=class AnswerError extends Error {
   constructor(code,status=503){super(code);this.code=code;this.status=status;}
 };
 
-function routeLoader({current=answer(),saveResult,editable=true,participant=true,refined="TEST refined",refineHook,readHook,editableHook,configHook}={}) {
+function routeLoader({current=answer(),saveResult,editable=true,participant=true,refined="TEST refined",refineHook,readHook,editableHook,configHook,answerForm=null,savedFields=null}={}) {
   const calls={writes:[],activity:[],refine:[],filters:[]};
   const helpers={
     AnswerError:answerError,
@@ -53,7 +53,10 @@ function routeLoader({current=answer(),saveResult,editable=true,participant=true
     },
     readAnswer:async()=>readHook?readHook():current,
   };
-  const caller={from(table) {
+  const caller={rpc(name) {
+    assert.equal(name,"choice_answer_history_access_ready");
+    return {abortSignal:async()=>({data:true,error:null})};
+  },from(table) {
     let changes=null;
     const query={
       update(value){changes=value;return query;},
@@ -62,6 +65,8 @@ function routeLoader({current=answer(),saveResult,editable=true,participant=true
       abortSignal(){return query;},
       select(){return query;},
       maybeSingle:async()=>{
+        if(table==="questions")return {data:{answer_form:answerForm},error:null};
+        if(table==="answers"&&!changes)return {data:{original_answer_fields:savedFields},error:null};
         calls.writes.push({table,changes});
         if(saveResult instanceof Error)return {data:null,error:saveResult};
         if(saveResult===null)return {data:null,error:null};
@@ -73,6 +78,17 @@ function routeLoader({current=answer(),saveResult,editable=true,participant=true
   }};
   const load=loader({
     "@/lib/supabase/server":{createSupabaseServerClient:async()=>caller},
+    "@/lib/supabase/admin":{createSupabaseAdminClient:()=>({rpc(name,params){
+      assert.equal(name,"save_manual_answer_refinement");
+      calls.filters.push(["question_id",params.p_question_id],["updated_at",params.p_expected_updated_at]);
+      calls.writes.push({table:"answers",changes:{refined_answer:params.p_result,refinement_used:true,
+        refined_at:"2026-10-08T11:01:00.000Z",current_answer_version:"refined"}});
+      return {abortSignal:async()=>{
+        if(saveResult instanceof Error)return {data:null,error:saveResult};
+        if(saveResult===null)return {data:null,error:null};
+        return {data:saveResult??{updated_at:"2026-10-08T11:01:00.000Z"},error:null};
+      }};
+    }})},
     "@/lib/activity/record":{recordParticipantActivity:async(...args)=>{calls.activity.push(args);return true;}},
     "@/lib/answers/server":helpers,
     "@/lib/ai/server/sentence-refinement-config":{
@@ -84,6 +100,59 @@ function routeLoader({current=answer(),saveResult,editable=true,participant=true
   });
   return {load,calls};
 }
+
+test("choice answer API accepts only one selected option or direct answer",async()=>{
+  const form={kind:"choice",title:"비교",labels:["색","경계","직접 입력","짧은 설명"],
+    max_selections:2,explanation_prompt:"어떤 차이를 확인하나요?"};
+  const {load,calls}=routeLoader({current:null,answerForm:form});
+  const {POST}=load("src/app/api/question-answer/route.ts");
+  const body={question_id:questionId,answer_version:"original",expected_updated_at:null};
+  for(const [text,fields] of [["색",["색","","",""]],["직접 작성",["","","직접 작성",""]],["",["","","",""]]]) {
+    assert.equal((await POST(response("/api/question-answer",{...body,answer_text:text,answer_fields:fields}))).status,200);
+  }
+  for(const [text,fields] of [["색\n\n경계",["색","경계","",""]],
+    ["색\n\n직접 작성",["색","","직접 작성",""]],["색\n\n설명",["색","","","설명"]]]) {
+    assert.equal((await POST(response("/api/question-answer",{...body,answer_text:text,answer_fields:fields}))).status,400);
+  }
+  assert.equal(calls.writes.length,3);
+});
+
+test("switching to an unchanged legacy choice version preserves its original fields",async()=>{
+  const form={kind:"choice",title:"비교",labels:["색","경계","직접 입력","짧은 설명"],
+    max_selections:2,explanation_prompt:"어떤 차이를 확인하나요?"};
+  const fields=["색","경계","","기존 설명"],text="색\n\n경계\n\n기존 설명";
+  const current=answer({original_answer:text,refined_answer:"다듬은 답변",refinement_used:true,current_answer_version:"refined"});
+  const {load,calls}=routeLoader({current,answerForm:form,savedFields:fields});
+  const responseBody={question_id:questionId,answer_version:"original",expected_updated_at:current.updated_at,
+    answer_text:text,answer_fields:fields};
+  assert.equal((await load("src/app/api/question-answer/route.ts").POST(response("/api/question-answer",responseBody))).status,200);
+  assert.deepEqual(calls.writes[0].changes.original_answer_fields,fields);
+});
+
+test("form answer API stores only supplied user fields and rejects count or rendered-text mismatch",async()=>{
+  const form={kind:"numbered",title:"확인할 기준 세 가지",labels:["항목 1","항목 2","항목 3"]};
+  const {load,calls}=routeLoader({current:null,answerForm:form});
+  const {POST}=load("src/app/api/question-answer/route.ts");
+  const body={question_id:questionId,answer_text:"직접 작성한 기준",answer_fields:["","직접 작성한 기준",""],
+    answer_version:"original",expected_updated_at:null};
+  const saved=await POST(response("/api/question-answer",body));
+  assert.equal(saved.status,200);
+  assert.deepEqual(calls.writes[0].changes.original_answer_fields,["","직접 작성한 기준",""]);
+  assert.equal(calls.writes[0].changes.original_answer,"직접 작성한 기준");
+  for(const invalid of [
+    {...body,answer_fields:["직접 작성한 기준",""]},
+    {...body,answer_text:"1. 직접 작성한 기준"},
+    {...body,answer_version:"refined"},
+  ])assert.equal((await POST(response("/api/question-answer",invalid))).status,400);
+  assert.equal(calls.writes.length,1);
+  const large=routeLoader({current:null,answerForm:form});
+  const text="가".repeat(20_000);
+  const accepted=await large.load("src/app/api/question-answer/route.ts").POST(response("/api/question-answer",{
+    ...body,answer_text:text,answer_fields:[text,"",""],
+  }));
+  assert.equal(accepted.status,200);
+  assert.equal(large.calls.writes[0].changes.original_answer.length,20_000);
+});
 
 test("the answer API enforces a stored follow-up lock without consulting feature configuration",async()=>{
   const owner="10000000-0000-4000-8000-000000000001";
@@ -334,21 +403,26 @@ test("sentence refinement provider uses one non-stored Responses request without
   assert.equal(providerCalls.clientOptions.maxRetries,0);
   assert.equal(providerCalls.parameters.model,"mock-model");
   assert.equal(providerCalls.parameters.store,false);
-  assert.match(providerCalls.parameters.instructions,/전문적인 문장으로 정돈하세요/);
+  assert.match(providerCalls.parameters.instructions,/맥락에 맞는 디자인 전문 용어로 정리할 수 있습니다/);
   assert.match(providerCalls.parameters.instructions,/불확실성, 미결정 상태, 근거 부족을 확신이나 완료된 판단으로 바꾸지 마세요/);
   assert.equal(providerCalls.parameters.input[0].content[0].text,"TEST original");
   assert.deepEqual(Object.keys(providerCalls.options),["signal"]);
   assert.ok(providerCalls.options.signal instanceof globalThis.AbortSignal);
 });
 
-test("sentence refinement v1.1 prompt preserves uncertainty and limits professionalization to a Mock contract",async()=>{
+test("sentence refinement v1.2 preserves uncertainty without interpreting it as a design decision",async()=>{
   const load=loader();
-  const updated=load("src/lib/ai/prompts/sentence-refinement-v1.1.ts").SENTENCE_REFINEMENT_PROMPT;
+  const refinement=load("src/lib/ai/prompts/sentence-refinement-v1.2.ts");
+  const updated=refinement.SENTENCE_REFINEMENT_PROMPT;
+  assert.equal(refinement.SENTENCE_REFINEMENT_PROMPT_VERSION,"sentence-refinement-v1.2");
+  assert.match(updated,/^# WHY BOX SENTENCE REFINEMENT PROMPT v1.2/);
   assert.match(updated,/의미 보존/);
   assert.match(updated,/새로운 사실이나 사용자가 표현하지 않은 의도도 추가하지 마세요/);
   for(const clause of [
     /사용자의 감정, 불확실성, 추측, 유보와 확신의 정도를 바꾸지 마세요/,
-    /디자인 의사결정과 검토 과정을 설명하는 데 적합한 자연스럽고 전문적인 문장/,
+    /질문 생성의 쉬운 표현 기준을 문장 다듬기에 일괄 적용하지 마세요/,
+    /의미가 불분명한 표현을 임의의 전문 개념으로 해석하지 마세요/,
+    /방향 미결정, 추가 검토 필요, 판단 근거 부족으로 임의 해석하지 마세요/,
     /사용자가 실제로 고민하거나 비교 중이라고 말한 경우에만/,
     /불확실성, 미결정 상태, 근거 부족을 확신이나 완료된 판단으로 바꾸지 마세요/,
     /사용자가 언급하지 않은 디자인 의도, 검토 과정, 판단 근거, 전문 용어를 새로 만들어내지 마세요/,
@@ -357,13 +431,13 @@ test("sentence refinement v1.1 prompt preserves uncertainty and limits professio
   ])assert.match(updated,clause);
 
   const scenarios=[
-    ["잘 모르겠음","아직 구체적인 방향을 정하지 못한 상태이다."],
-    ["색상은 아직 잘 모르겠어서 고민 중이다.","색상 방향은 현재 여러 가능성을 고려하며 검토 중이다."],
-    ["그냥 예뻐 보여서 이렇게 했다.","시각적인 인상을 고려하여 해당 표현 방식을 선택했다."],
-    ["이게 맞는지 모르겠다.","현재 선택한 방향의 적절성을 추가로 검토할 필요가 있다."],
-    ["별생각 없이 배치했다.","배치의 구체적인 의도와 근거는 아직 정리되지 않은 상태이다."],
+    ["잘 모르겠음","잘 모르겠습니다."],
+    ["색상은 아직 잘 모르겠어서 고민 중이다.","색상은 아직 잘 모르겠어서 고민 중입니다."],
+    ["그냥 예뻐 보여서 이렇게 했다.","그냥 예뻐 보여서 이렇게 했습니다."],
+    ["이게 맞는지 모르겠다.","이게 맞는지 모르겠습니다."],
+    ["별생각 없이 배치했다.","별생각 없이 배치했습니다."],
     ["버튼 간격은 16px로 설정했다.","버튼 간격은 16px로 설정했다."],
-    ["잘 모르겠다.","아직 구체적인 방향을 정하지 못했다."],
+    ["잘 모르겠다.","잘 모르겠습니다."],
   ];
   let activeScenario;
   const requests=[];

@@ -226,7 +226,8 @@ test("follow-up exports retain lineage, child answers and decision provenance wi
   const request={
     id:id(32),session_id:id(3),participant_id:id(1),request_id:id(33),
     root_question_id:id(5),parent_question_id:id(6),expected_answer_updated_at:time,
-    answer_hash:"a".repeat(64),answer_snapshot:"+정제본",status:"generated",result_question_id:id(30),
+    answer_hash:"a".repeat(64),answer_snapshot:"+정제본",supplemental_context_snapshot:"사용자가 보충한 맥락",
+    status:"generated",result_question_id:id(30),
     prompt_version:"question-followup-v1.0",model_id:"offline-model",failure_code:null,
     input_tokens:123,output_tokens:45,created_at:time,dispatched_at:time,finished_at:time,
   };
@@ -243,12 +244,14 @@ test("follow-up exports retain lineage, child answers and decision provenance wi
   assert.equal(requests.rowCount,3);
   assert.equal(requests.getCell("D2").value,id(5));
   assert.equal(requests.getCell("E2").value,id(6));
-  assert.equal(requests.getCell("H2").value,"generated");
-  assert.equal(requests.getCell("I2").value,id(30));
-  assert.equal(requests.getCell("J2").value,"question-followup-v1.0");
-  assert.equal(requests.getCell("M2").value,123);
-  assert.equal(requests.getCell("N2").value,45);
-  assert.equal(requests.getCell("H3").value,"no_followup");
+  assert.equal(requests.getCell("F2").value,"+정제본");
+  assert.equal(requests.getCell("G2").value,"사용자가 보충한 맥락");
+  assert.equal(requests.getCell("I2").value,"generated");
+  assert.equal(requests.getCell("J2").value,id(30));
+  assert.equal(requests.getCell("K2").value,"question-followup-v1.0");
+  assert.equal(requests.getCell("N2").value,123);
+  assert.equal(requests.getCell("O2").value,45);
+  assert.equal(requests.getCell("I3").value,"no_followup");
   assert.equal(book.getWorksheet("Questions").getCell("G4").value,"followup");
   assert.equal(book.getWorksheet("Questions").getCell("K4").value,id(6));
   assert.equal(book.getWorksheet("Answers").getCell("E3").value,"후속 답변");

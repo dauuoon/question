@@ -8,6 +8,7 @@ import { QUESTION_GENERATION_SIGNED_URL_SECONDS } from "../ai/server/question-ge
 import { answerRevisionSchema } from "../answers/revision";
 import { readQuestionActionCapabilities } from "./actions-server";
 import { readQuestionFollowupAccess } from "./followup-access";
+import { answerFormSchema, answerFieldsSchema, answerFieldsText, answerFieldsMatchForm } from "../answers/form";
 
 const sessionSnapshotSchema = z.object({
   id: z.uuid(), participant_id: z.uuid(),
@@ -34,7 +35,7 @@ export async function readGenerationView(caller: SupabaseClient, userId: string,
   const followupAccess = await readQuestionFollowupAccess(caller, userId);
   const [attempts, questions] = await Promise.all([
     caller.from("question_generation_attempts")
-    .select("status,generated_at,request_id").eq("session_id", sessionId)
+    .select("status,generated_at,request_id,started_at").eq("session_id", sessionId)
     .order("started_at", { ascending: false }).limit(1),
     caller.from("questions").select("id,slot_index,question_text,status,regeneration_index")
     .eq("session_id", sessionId).in("question_kind",["original","regenerated"])
@@ -44,7 +45,8 @@ export async function readGenerationView(caller: SupabaseClient, userId: string,
     throw new QuestionGenerationError("QGEN-DB", 503);
   }
   const parsedAttempts = z.array(z.object({ status: z.enum(["running", "completed", "failed"]),
-    generated_at: z.string().nullable(), request_id: z.uuid() })).max(1).safeParse(attempts.data);
+    generated_at: z.string().nullable(), request_id: z.uuid(),
+    started_at: z.iso.datetime({ offset: true }) })).max(1).safeParse(attempts.data);
   if (!parsedAttempts.success) throw new QuestionGenerationError("QGEN-DB", 503);
   const attempt = parsedAttempts.data[0];
   const state = attempt?.status === "running" ? (attempt.generated_at ? "recovery" : "running") :
@@ -54,6 +56,7 @@ export async function readGenerationView(caller: SupabaseClient, userId: string,
   let savedQuestions: GenerationView["questions"] = [];
   let signedImages: Array<{id:string;sort_order:number;width:number|null;height:number|null;signed_url:string}> = [];
   let answerEditable = false;
+  let formsAvailable = true;
   let capabilities: GenerationView["question_actions"] = {ready:false,reserve_count:0,reserve_count_by_question:{}};
   if (state === "completed") {
     const saved = z.array(z.object({
@@ -110,6 +113,22 @@ export async function readGenerationView(caller: SupabaseClient, userId: string,
       throw new QuestionGenerationError("QGEN-RECOVERY",503);
     }
     const allQuestionIds=[...saved.data.map(question=>question.id),...followups.data.map(question=>question.id)];
+    const [formRows,fieldRows]=await Promise.all([
+      caller.from("questions").select("id,answer_form").in("id",allQuestionIds),
+      caller.from("answers").select("question_id,original_answer_fields").in("question_id",allQuestionIds),
+    ]);
+    const missingColumn=(error:{code:string}|null)=>error?.code==="42703"||error?.code==="PGRST204";
+    if((formRows.error&&!missingColumn(formRows.error))||(fieldRows.error&&!missingColumn(fieldRows.error))) {
+      throw new QuestionGenerationError("QGEN-DB",503);
+    }
+    formsAvailable=!formRows.error&&!fieldRows.error;
+    const forms=z.array(z.object({id:z.uuid(),answer_form:answerFormSchema.nullable()})).safeParse(
+      formRows.error?[]:formRows.data);
+    const fields=z.array(z.object({question_id:z.uuid(),original_answer_fields:answerFieldsSchema.nullable()})).safeParse(
+      fieldRows.error?[]:fieldRows.data);
+    if(!forms.success||!fields.success)throw new QuestionGenerationError("QGEN-RECOVERY",503);
+    const formMap=new Map(forms.data.map(row=>[row.id,row.answer_form]));
+    const fieldsMap=new Map(fields.data.map(row=>[row.question_id,row.original_answer_fields]));
     const [answerRows, urls] = await Promise.all([
       allQuestionIds.length ? caller.from("answers")
       .select("question_id,original_answer,refined_answer,refinement_used,current_answer_version,updated_at")
@@ -141,10 +160,15 @@ export async function readGenerationView(caller: SupabaseClient, userId: string,
     }
     const answerFor=(questionId:string)=>{
       const answer=answerByQuestion.get(questionId);
+      const fieldValues=fieldsMap.get(questionId);
+      const form=formMap.get(questionId);
+      if(fieldValues&&(answerFieldsText(fieldValues)!==answer?.original_answer||
+        !form || !answerFieldsMatchForm(form,fieldValues)))throw new QuestionGenerationError("QGEN-RECOVERY",503);
       return answer ? {
         original_answer:answer.original_answer,refined_answer:answer.refined_answer,
         refinement_used:answer.refinement_used,current_answer_version:answer.current_answer_version,
         updated_at:answer.updated_at,
+        ...(fieldValues?{original_answer_fields:fieldValues}:{}),
       } : {
         original_answer:"",refined_answer:null,refinement_used:false,
         current_answer_version:"original" as const,updated_at:null,
@@ -152,13 +176,15 @@ export async function readGenerationView(caller: SupabaseClient, userId: string,
     };
     savedQuestions = saved.data.map((question) => ({
       ...question,
+      ...(formMap.get(question.id)?{answer_form:formMap.get(question.id)}:{}),
       targets:(byQuestion.get(question.id) ?? []).map((target) => ({
         image_id:target.image_id,x:target.x,y:target.y,width:target.width,height:target.height,sort_order:target.sort_order,
       })),
       answer:answerFor(question.id),
       followup_question:(()=>{
         const child=followupByParent.get(question.id);
-        return child?{id:child.id,question_text:child.question_text,status:child.status,answer:answerFor(child.id)}:null;
+        return child?{id:child.id,question_text:child.question_text,status:child.status,answer:answerFor(child.id),
+          ...(formMap.get(child.id)?{answer_form:formMap.get(child.id)}:{})}:null;
       })(),
       last_followup_request:(()=>{
         const request=latestRequestByParent.get(question.id);
@@ -175,8 +201,11 @@ export async function readGenerationView(caller: SupabaseClient, userId: string,
     answer_editable:state==="completed" && answerEditable,
     followup_enabled:followupAccess.enabled,
     readability_improved:true,
+    ...(!formsAvailable?{answer_forms_available:false}:{}),
     question_actions:capabilities,
     failed_request_id: attempt?.status === "failed" ? attempt.request_id : null,
+    generation_elapsed_ms: state === "running" && attempt ?
+      Math.max(0, Date.now() - Date.parse(attempt.started_at)) : null,
     questions: state === "completed" ? savedQuestions : [],
     images: state === "completed" ? signedImages : [],
   });

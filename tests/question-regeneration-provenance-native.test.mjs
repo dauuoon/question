@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
 import {mkdtempSync,readFileSync,rmSync} from "node:fs";
 import {join} from "node:path";
-import {URL} from "node:url";
 import {createServer} from "node:net";
 import {randomUUID} from "node:crypto";
 import process from "node:process";
@@ -27,7 +26,6 @@ test("native PostgreSQL dispatch provenance is atomic, private, immutable and re
     started=true;
     await initialize(execute);
     await populate(execute,sql=>JSON.parse(execute(sql).split("\n").at(-1)));
-    execute(readFileSync(new URL("../supabase/migrations/20261010002000_regeneration_dispatch_provenance.sql",import.meta.url),"utf8"));
     const question=JSON.parse(execute("select json_build_object('id',id,'session_id',session_id) from questions where is_active_version order by slot_index limit 1"));
     const request=randomUUID();
     const auth=`set request.jwt.claim.role='service_role';`;

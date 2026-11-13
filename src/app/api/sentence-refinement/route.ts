@@ -9,6 +9,8 @@ import {
 import { sentenceRefinementConfig,SENTENCE_REFINEMENT_TIMEOUT_MS } from "@/lib/ai/server/sentence-refinement-config";
 import { refineSentence } from "@/lib/ai/server/sentence-refinement";
 import { runSentenceRefinement } from "@/lib/ai/server/sentence-refinement-flight";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { SENTENCE_REFINEMENT_PROMPT_VERSION } from "@/lib/ai/prompts/sentence-refinement-v1.2";
 
 export const runtime="nodejs";
 export const maxDuration=70;
@@ -78,11 +80,10 @@ export async function POST(request:NextRequest) {
         throw new SentenceRefinementError("REFINE-STALE",409);
       }
       if(controller.signal.aborted)throw new SentenceRefinementError("REFINE-TIMEOUT",504);
-      const refinedAt=new Date().toISOString();
-      const saved=await caller.from("answers").update({
-        refined_answer:refined,refinement_used:true,refined_at:refinedAt,current_answer_version:"refined",
-      }).eq("question_id",parsed.data.question_id).eq("updated_at",answer.updated_at)
-        .abortSignal(controller.signal).select("updated_at").maybeSingle();
+      const saved=await createSupabaseAdminClient().rpc("save_manual_answer_refinement",{
+        p_question_id:parsed.data.question_id,p_participant_id:userId,p_expected_updated_at:answer.updated_at,
+        p_source:source,p_result:refined,p_prompt_version:SENTENCE_REFINEMENT_PROMPT_VERSION,p_model:config.model,
+      }).abortSignal(controller.signal);
       if(saved.error) {
         if(controller.signal.aborted)throw new SentenceRefinementError("REFINE-TIMEOUT",504);
         if(saved.error.code==="42501") throw new SentenceRefinementError("REFINE-AUTH",403);

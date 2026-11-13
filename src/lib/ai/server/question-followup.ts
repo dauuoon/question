@@ -2,7 +2,7 @@ import "server-only";
 import OpenAI from "openai";
 import type { ResponseCreateParamsNonStreaming, ResponseInputContent } from "openai/resources/responses/responses";
 import { DESIGN_CATEGORIES, REFLECTION_CONTEXTS, WORK_STAGES } from "../../constants/research-options";
-import { QUESTION_FOLLOWUP_PROMPT } from "../prompts/question-followup-v1.0";
+import { QUESTION_FOLLOWUP_PROMPT } from "../prompts/question-followup-v1.10";
 import {
   QUESTION_FOLLOWUP_SCHEMA, QuestionFollowupError, questionFollowupOutputSchema,
 } from "../question-followup-contract";
@@ -11,11 +11,13 @@ import { QUESTION_FOLLOWUP_TIMEOUT_MS } from "./question-followup-config";
 export type QuestionFollowupInput = {
   question_text: string;
   answer_text: string;
+  answer_selection?: { selected_options: string[]; other: string; explanation: string };
   primary_category_id: string | null;
   subcategory_id: string | null;
   other_category_text: string | null;
   stage_id: string | null;
   additional_context: string | null;
+  supplemental_context: string;
   context_ids: string[];
 };
 
@@ -24,12 +26,14 @@ export function questionFollowupParameters(model: string, input: QuestionFollowu
   const context = {
     question: input.question_text,
     answer: input.answer_text,
+    ...(input.answer_selection ? { answer_selection: input.answer_selection } : {}),
     design_category: category?.label ?? input.primary_category_id,
     design_subcategory: category?.items.find(item => item.id === input.subcategory_id)?.label ?? input.subcategory_id,
     other_category: input.other_category_text,
     work_stage: WORK_STAGES.find(item => item.id === input.stage_id)?.label ?? input.stage_id,
     reflection_contexts: input.context_ids.map(id => REFLECTION_CONTEXTS.find(item => item.id === id)?.label ?? id),
     additional_context: input.additional_context,
+    supplemental_context: input.supplemental_context,
   };
   const content: ResponseInputContent[] = [{
     type: "input_text",
@@ -42,7 +46,7 @@ export function questionFollowupParameters(model: string, input: QuestionFollowu
     text: { format: { type: "json_schema", ...QUESTION_FOLLOWUP_SCHEMA } },
     store: false,
     stream: false,
-    max_output_tokens: 350,
+    max_output_tokens: 800,
   };
 }
 

@@ -3,8 +3,9 @@ import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { isInvalidAuthSession } from "../../auth/session-error";
 import { IMAGE_BUCKET } from "../../images/limits";
-import { QUESTION_GENERATION_PROMPT_VERSION } from "../prompts/question-generation-v2.5";
-import { QUESTION_GENERATION_SCHEMA } from "../schemas/question-generation-v2.0";
+import { QUESTION_GENERATION_PROMPT_VERSION } from "../prompts/question-generation-v2.15";
+import { answerFormsReady } from "../../answers/forms-ready";
+import { QUESTION_GENERATION_SCHEMA } from "../schemas/question-generation-v2.3";
 import {
   QuestionGenerationError, type QuestionGenerationRequest, type QuestionGenerationResult,
 } from "../question-generation-contract";
@@ -88,6 +89,7 @@ export function createGenerationRepository(caller: SupabaseClient, trusted: Supa
       return parsed.data;
     },
     async images(attempt, signal) {
+      if(!await answerFormsReady(caller,signal))throw new QuestionGenerationError("QGEN-DB",503);
       const urls: string[] = [];
       for (const image of attempt.image_snapshot) {
         if (!image.storage_path.startsWith(`${userId}/${attempt.session_id}/`)) {

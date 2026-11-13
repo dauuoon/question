@@ -13,8 +13,7 @@ async function fixture() {
   };
   const json = async sql => (await exec(sql)).findLast(r => r.rows?.[0]?.result !== undefined)?.rows[0].result;
   await initialize(exec, true);
-  for (const name of ["20261010002000_regeneration_dispatch_provenance.sql",
-    "20261010003000_session_completion_briefing.sql"]) {
+  for (const name of ["20261010003000_session_completion_briefing.sql"]) {
     await exec(read(`supabase/migrations/${name}`));
   }
   const session = randomUUID();

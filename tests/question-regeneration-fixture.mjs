@@ -13,8 +13,19 @@ export const migrations = [
   "20261005190000_session_context_save.sql", "20261005231000_context_draft_claim.sql",
   "20261006031000_image_deletion.sql", "20261008031500_question_generation_foundation.sql",
   "20261008220000_answer_refinement_version.sql", "20261009002000_question_actions.sql",
-  "20261010001500_question_regeneration.sql",
+  "20261010001500_question_regeneration.sql", "20261010002000_regeneration_dispatch_provenance.sql",
   "20261012230000_question_followups.sql",
+  "20261112010000_question_generation_v2_6.sql",
+  "20261112020000_session_context_supplements.sql",
+  "20261112030000_question_regeneration_v1_1.sql",
+  "20261112040000_question_followup_context_snapshots.sql",
+  "20261112050000_question_expression_versions.sql",
+  "20261112060000_question_answer_forms.sql",
+  "20261113010000_question_grounding_versions.sql",
+  "20261113020000_question_purpose_versions.sql",
+  "20261113030000_question_natural_expression_versions.sql",
+  "20261113040000_question_text_role_versions.sql",
+  "20261113050000_question_choice_answers.sql",
 ];
 export const generatedAt = "2026-10-09T15:00:00Z";
 export const quote = (value) => value === null ? "null" : `'${String(value).replaceAll("'", "''")}'`;
@@ -23,11 +34,12 @@ export const auth = (role = "service_role", actor = owner) =>
     set_config('request.jwt.claim.role',${quote(role)},false);`;
 export const candidate = (text = "A fresh API perspective?") => ({
   candidate_rank: 1, question_text: text, content_principle: "사고의 자각과 외재화", question_type: "자기인식 질문",
-  related_contexts: ["visual_form"], answer_guides: ["Consider another angle"],
+  related_contexts: ["visual_form"], answer_guides: ["Consider another angle"],answer_form:null,
   target: { type: "region", image_indices: [2], region: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 } },
 });
-export const initialCandidates = () => Array.from({ length: 5 }, (_, i) => ({
+export const initialCandidates = (forms=[]) => Array.from({ length: 5 }, (_, i) => ({
   ...candidate(`Initial question ${i + 1}?`), candidate_rank: i + 1,
+  answer_form:forms[i]??null,answer_guides:forms[i]?[]:["Consider another angle"],
   target: { type: "image", image_indices: [1], region: null },
 }));
 
@@ -42,7 +54,7 @@ export async function initialize(exec, pglite = false) {
   await exec(`insert into auth.users values(${quote(owner)}),(${quote(other)});
     insert into public.profiles(id,participant_code) values(${quote(owner)},'P99001'),(${quote(other)},'P99002');`);
 }
-export async function populate(exec, json, count = 5) {
+export async function populate(exec, json, count = 5, forms, formPrompt="question-generation-v2.8") {
   const session = randomUUID();
   const request = randomUUID();
   await exec(`insert into public.sessions(id,participant_id,requested_question_count)
@@ -62,8 +74,10 @@ export async function populate(exec, json, count = 5) {
   }
   const attempt = await json(`${auth("authenticated")} select public.begin_question_generation(${quote(session)},${quote(request)}) as result;`);
   await exec(`${auth()} select public.stage_question_generation_candidates(${quote(attempt.attempt_id)},${quote(request)},
-    ${quote(JSON.stringify(initialCandidates()))}::jsonb,'LOCAL-MOCK','question-generation-v2.5',
-    'why_box_question_generation_v2_0','v1.0',${quote(generatedAt)});
+    ${quote(JSON.stringify(initialCandidates(forms)))}::jsonb,'LOCAL-MOCK',${quote(forms?formPrompt:"question-generation-v2.5")},
+    ${quote(forms?(["question-generation-v2.14","question-generation-v2.15"].includes(formPrompt)?"why_box_question_generation_v2_3":
+      formPrompt==="question-generation-v2.13"?"why_box_question_generation_v2_2":"why_box_question_generation_v2_1"):
+      "why_box_question_generation_v2_0")},'v1.0',${quote(generatedAt)});
     select public.commit_question_generation(${quote(attempt.attempt_id)},${quote(request)});`);
   const questions = await json(`select jsonb_agg(to_jsonb(q) order by q.slot_index) as result
     from public.questions q where session_id=${quote(session)} and is_active_version;`);
@@ -95,7 +109,7 @@ export const expireSQL = (r, dispatched = false) => `reset role;
   update public.question_regeneration_attempts set ${dispatched ? "dispatch_expires_at" : "reserved_expires_at"}=clock_timestamp()-interval '1 second'
     where id=${quote(r.attempt_id)};
   alter table public.question_regeneration_attempts enable trigger question_regeneration_attempts_history;`;
-export async function pgliteFixture(count = 5) {
+export async function pgliteFixture(count = 5,forms,formPrompt) {
   const db = new PGlite();
   const exec = async (sql) => {
     await db.exec("reset role");
@@ -107,6 +121,6 @@ export async function pgliteFixture(count = 5) {
     return result.findLast((r) => r.rows?.[0]?.result !== undefined)?.rows[0].result;
   };
   await initialize(exec, true);
-  const f = await populate(exec, json, count);
+  const f = await populate(exec, json, count,forms,formPrompt);
   return { ...f, db, exec, json, close: () => db.close() };
 }

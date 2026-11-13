@@ -313,6 +313,28 @@ test("double start, rerender-style attach and Strict Mode reuse have one POST wi
   controller.detach(); await settle();
 });
 
+test("elapsed clock starts per request, stops on completion or failure, and resets on retry", async (t) => {
+  let now=10_000, request, outcome="failed";
+  t.mock.method(Date,"now",()=>now);
+  const states=[];
+  const controller=new GenerationController(view(),()=>true,s=>states.push(s),async(_session,id)=>{
+    request=id;
+    return outcome==="completed" ? {status:"completed",question_ids:view("completed").questions.map(q=>q.id)} :
+      {status:"running"};
+  },async()=>outcome==="completed" ? view("completed") : {...view(),failed_request_id:request});
+  controller.attach();
+  await controller.start();
+  assert.equal(states[0].requestStartedAt,10_000);
+  assert.equal(states[0].clockActive,true);
+  assert.equal(states.at(-1).clockActive,false);
+  now=25_000; outcome="completed";
+  await controller.start();
+  assert.equal(states.findLast(s=>s.clockActive).requestStartedAt,25_000);
+  assert.equal(states.at(-1).view.state,"completed");
+  assert.equal(states.at(-1).clockActive,false);
+  controller.detach();await settle();
+});
+
 test("202 uses bounded GET polling only and stops in locked recovery after budget", async (t) => {
   t.mock.timers.enable({apis:["setTimeout"]});
   let posts=0,reads=0; const states=[];
@@ -371,7 +393,8 @@ test("read-only catalog path returns ordered public questions, failed unlock and
   const {readGenerationView}=load("src/lib/question-generation/read.ts");
   const owner=randomUUID(); const calls=[];
   function caller(status,attempt,questions=view("completed").questions,signedError=false) {
-    const values={sessions:{status,requested_question_count:3},question_generation_attempts:attempt?[attempt]:[],
+    const values={sessions:{status,requested_question_count:3},
+      question_generation_attempts:attempt?[{started_at:new Date(Date.now()-12_000).toISOString(),...attempt}]:[],
       questions:questions.map(question=>({id:question.id,slot_index:question.slot_index,question_text:question.question_text,
         status:question.status,regeneration_index:question.regeneration_index})),
       question_followup_requests:[],
@@ -383,6 +406,7 @@ test("read-only catalog path returns ordered public questions, failed unlock and
       reserve_count_by_question:Object.fromEntries(questions.map(question=>[question.id,0]))},error:null}),from(table){
       let rows=values[table];
       const q={select(columns){calls.push({table,columns});
+          if(columns==="id,answer_form"||columns==="question_id,original_answer_fields")rows=[];
           if(table==="questions"&&columns.includes("parent_question_id"))rows=[];
           return q;},eq(){return q;},in(){return q;},order(){return q;},limit(){return q;},
         maybeSingle:async()=>({data:rows,error:null}),then(resolve){return Promise.resolve({data:rows,error:null}).then(resolve);}};
@@ -411,7 +435,12 @@ test("read-only catalog path returns ordered public questions, failed unlock and
     ["question_generation",{status:"failed",generated_at:null,request_id:requestId},"editable"],
     ["draft",{status:"running",generated_at:null,request_id:requestId},"running"],
     ["draft",{status:"running",generated_at:"2026-10-08T00:00:00Z",request_id:requestId},"recovery"],
-  ]) assert.equal((await readGenerationView(caller(status,attempt,[]),owner,sessionId)).state,state);
+  ]) {
+    const result = await readGenerationView(caller(status,attempt,[]),owner,sessionId);
+    assert.equal(result.state,state);
+    if (state === "running") assert.ok(result.generation_elapsed_ms >= 12_000);
+    else assert.equal(result.generation_elapsed_ms,null);
+  }
   assert.ok(calls.filter(c=>c.table==="questions").some(c=>c.columns==="id,slot_index,question_text,status,regeneration_index"));
   await assert.rejects(readGenerationView(caller("in_progress",null,[]),owner,sessionId),e=>e.code==="QGEN-RECOVERY");
   await assert.rejects(readGenerationView(caller("unknown",null,[]),owner,sessionId),e=>e.code==="QGEN-DB");
@@ -441,7 +470,8 @@ test("saved follow-up and parent lock restore through the real read contract eve
     from(table) {
       let data=rows[table];
       const q={select(columns){
-        if(table==="questions")data=columns.includes("parent_question_id")?
+        if(columns==="id,answer_form"||columns==="question_id,original_answer_fields")data=[];
+        else if(table==="questions")data=columns.includes("parent_question_id")?
           [{id:childId,parent_question_id:parent.id,question_text:"A follow-up?",status:"answered"}]:
           base.questions.map(({id,slot_index,question_text,status,regeneration_index})=>
             ({id,slot_index,question_text,status,regeneration_index}));
@@ -504,7 +534,8 @@ test("large and skewed request history restores only each active parent's latest
       const query={
         select(value){
           columns=value;
-          if(table==="questions")data=value.includes("parent_question_id")?
+          if(value==="id,answer_form"||value==="question_id,original_answer_fields")data=[];
+          else if(table==="questions")data=value.includes("parent_question_id")?
             [{id:childId,parent_question_id:parent.id,question_text:"Saved child?",status:"answered"}]:
             base.questions.map(({id,slot_index,question_text,status,regeneration_index})=>
               ({id,slot_index,question_text,status,regeneration_index}));
@@ -616,8 +647,10 @@ async function mount(t, {initial=view(),input=valid,imageCount=1,available=true,
   return {host,button,click,render:()=>act(async()=>{render();await settle();}),calls,saves,countSaves,dom};
 }
 
-async function mountResult(t,result=view("completed"),fetchHandler,sessionStatus="in_progress") {
+async function mountResult(t,result=view("completed"),fetchHandler,sessionStatus="in_progress",sessionId,supplementSave) {
   const dom=new JSDOM("<!doctype html><div id='root'></div>",{url:"http://localhost/history"});
+  dom.window.HTMLDialogElement.prototype.showModal=function(){this.setAttribute("open","");};
+  dom.window.HTMLDialogElement.prototype.close=function(){this.removeAttribute("open");};
   const observers=[];
   const originals={};
   for(const [name,value] of Object.entries({window:dom.window,document:dom.window.document,Element:dom.window.Element,
@@ -634,13 +667,16 @@ async function mountResult(t,result=view("completed"),fetchHandler,sessionStatus
   const resultLoader=loader({
     "next/link":{default:({children,...props})=>React.createElement("a",props,children)},
     "next/navigation":{useRouter:()=>router},
+    "./context-actions":{saveSessionContextSupplement:supplementSave??(async()=>{
+      throw new Error("UNMOCKED SUPPLEMENT SAVE BLOCKED");
+    })},
   });
   const {QuestionResult}=resultLoader("src/app/(participant)/sessions/[sessionId]/question-result.tsx");
   const {ToastProvider}=resultLoader("src/app/toast.tsx");
   if(fetchHandler)t.mock.method(globalThis,"fetch",fetchHandler);
   const host=dom.window.document.getElementById("root"),root=createRoot(host);
   await act(async()=>{root.render(React.createElement(React.StrictMode,null,
-    React.createElement(ToastProvider,null,React.createElement(QuestionResult,{result,sessionStatus}))));await settle();});
+    React.createElement(ToastProvider,null,React.createElement(QuestionResult,{result,sessionId,sessionStatus}))));await settle();});
   let closed=false;
   const close=async()=>{
     if(closed)return;
@@ -663,15 +699,58 @@ for(const [name,opts] of [
   assert.equal(ui.calls.filter(c=>c.opts.method==="POST"&&c.url==="/api/question-generation").length,0);
 });
 
-test("component valid saved draft enables CTA; counts 1..5 immediately autosave and lock pending",async(t)=>{
+async function setQuestionCount(ui,value) {
+  const slider=ui.host.querySelector('input[name="question-count"]');
+  await act(async()=>{
+    Object.getOwnPropertyDescriptor(ui.dom.window.HTMLInputElement.prototype,"value").set.call(slider,String(value));
+    slider.dispatchEvent(new ui.dom.window.Event("input",{bubbles:true}));
+    slider.dispatchEvent(new ui.dom.window.Event("change",{bubbles:true}));
+    await settle();
+  });
+}
+
+test("question slider defaults to three and autosaves counts two through five",async(t)=>{
   const ui=await mount(t);assert.equal(ui.button("질문 생성하기").disabled,false);
-  assert.equal(ui.host.querySelector('input[name="question-count"]:checked').value,"3");
-  for(const n of [1,2,3,4,5]) {
-    await ui.click(ui.host.querySelector(`input[name="question-count"][value="${n}"]`));
+  const slider=ui.host.querySelector('input[name="question-count"]');
+  assert.equal(slider.type,"range");assert.equal(slider.min,"2");assert.equal(slider.max,"5");
+  assert.equal(slider.value,"3");
+  for(const n of [2,3,4,5]) {
+    await setQuestionCount(ui,n);
     await act(async()=>{await new Promise(r=>setTimeout(r,5));await settle();});
     assert.equal(ui.countSaves.at(-1),n);
     assert.equal(ui.button("질문 생성하기").disabled,false);
   }
+});
+
+test("pin toggle hides pins and open bubble without changing question navigation",async t=>{
+  const ui=await mountResult(t);
+  const toggle=()=>ui.host.querySelector(".question-pin-visibility");
+  assert.equal(toggle().getAttribute("aria-label"),"핀 숨기기");
+  assert.equal(toggle().querySelectorAll("svg path").length,1);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 1 위치 보기"]').click();await settle();});
+  assert.ok(ui.host.querySelector(".question-bubble"));
+  await act(async()=>{toggle().click();await settle();});
+  assert.equal(toggle().getAttribute("aria-label"),"핀 보이기");
+  assert.equal(toggle().querySelectorAll("svg path").length,2);
+  assert.equal(ui.host.querySelectorAll(".question-pin").length,0);
+  assert.equal(ui.host.querySelector(".question-bubble"),null);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 2 선택"]').click();await settle();});
+  assert.equal(ui.host.querySelector(".question-panel-count").textContent,"질문 2 / 3");
+  assert.equal(ui.host.querySelectorAll(".question-pin").length,0);
+  await act(async()=>{toggle().click();await settle();});
+  assert.equal(ui.host.querySelectorAll(".question-pin").length,3);
+  assert.equal(ui.host.querySelector('[aria-label="질문 2 위치 보기"]').getAttribute("aria-current"),"true");
+});
+
+test("editable legacy single-question draft defaults to three and saves before generation",async t=>{
+  const pending=deferred();
+  const ui=await mount(t,{initial:{...view(),requested_question_count:1},countSaveResult:()=>pending.promise});
+  await act(async()=>{await new Promise(r=>setTimeout(r,5));await settle();});
+  assert.equal(ui.host.querySelector('input[name="question-count"]').value,"3");
+  assert.deepEqual(ui.countSaves,[3]);
+  assert.equal(ui.button("질문 생성하기").disabled,true);
+  await act(async()=>{pending.resolve({success:true,changed:true,activityRecorded:true});await settle();});
+  assert.equal(ui.button("질문 생성하기").disabled,false);
 });
 
 test("real context autosave pending/failed gates CTA, retry recovers, edits survive generation lock",async(t)=>{
@@ -690,7 +769,7 @@ test("real context autosave pending/failed gates CTA, retry recovers, edits surv
   assert.equal(textarea.value,"TEST edited context");
 });
 
-for(const n of [1,3,5]) test(`component success N=${n}: one POST, authoritative slot result, reload/re-entry no POST`,async(t)=>{
+for(const n of [2,3,4,5]) test(`component success N=${n}: one POST, authoritative slot result, reload/re-entry no POST`,async(t)=>{
   const ui=await mount(t,{initial:view("editable",n)});
   await ui.click(ui.button("질문 생성하기"));
   assert.equal(ui.host.querySelectorAll(".question-page-button").length,n);
@@ -698,6 +777,14 @@ for(const n of [1,3,5]) test(`component success N=${n}: one POST, authoritative 
   await ui.render();
   assert.equal(ui.calls.filter(c=>c.url==="/api/question-generation"&&c.opts.method==="POST").length,1);
   assert.doesNotMatch(ui.host.textContent,/candidate_rank|model|prompt|selection_reason/);
+});
+
+test("completed legacy one-question session remains readable without saving or generating",async t=>{
+  const ui=await mount(t,{initial:view("completed",1)});
+  assert.equal(ui.host.querySelectorAll(".question-page-button").length,1);
+  assert.equal(ui.host.querySelector(".question-panel-count").textContent,"질문 1 / 1");
+  assert.deepEqual(ui.countSaves,[]);
+  assert.equal(ui.calls.filter(c=>c.url==="/api/question-generation"&&c.opts.method==="POST").length,0);
 });
 
 test("component immediate double click locks inputs/count/images with long-loading copy; 202 is not an error",async(t)=>{
@@ -714,7 +801,8 @@ test("component immediate double click locks inputs/count/images with long-loadi
   assert.ok([...ui.host.querySelectorAll('input[name="question-count"]')].every(i=>i.closest("fieldset").disabled));
   assert.match(ui.host.textContent,/질문을 생성하고 있어요···/);
   assert.match(readFileSync("src/app/globals.css","utf8"),/background: rgb\(248 248 247 \/ 80%\)/);
-  assert.doesNotMatch(ui.host.textContent,/\d+초|%/);
+  assert.match(ui.host.textContent,/경과 시간 0분 0초/);
+  assert.equal(Boolean(ui.host.querySelector(".loading-state-overlay progress, .loading-state-overlay [role=progressbar]")),false);
   await act(async()=>{pending.resolve();await settle();});
   assert.match(ui.host.textContent,/질문을 생성하고 있어요···/);
 });
@@ -787,11 +875,50 @@ test("question generation loading is a centered full-screen overlay with supplie
   assert.match(readFileSync("src/app/globals.css","utf8"),/background: rgb\(20 20 22 \/ 80%\)/);
 });
 
+test("generation loading shows elapsed time and stops its timer without fabricating progress",async(t)=>{
+  t.mock.timers.enable({apis:["setInterval"]});
+  let now=100_000;
+  t.mock.method(Date,"now",()=>now);
+  const dom=new JSDOM("<!doctype html><div id='root'></div>"), originals={};
+  for(const [name,value] of Object.entries({window:dom.window,document:dom.window.document,Element:dom.window.Element,
+    IS_REACT_ACT_ENVIRONMENT:true})) {
+    originals[name]=Object.getOwnPropertyDescriptor(globalThis,name);
+    Object.defineProperty(globalThis,name,{value,writable:true,configurable:true});
+  }
+  const {createRoot}=await import("react-dom/client");
+  const {QuestionGenerationLoading}=loader()("src/app/(participant)/sessions/[sessionId]/question-generation-loading.tsx");
+  const host=dom.window.document.getElementById("root"),root=createRoot(host);
+  t.after(async()=>{
+    await act(async()=>root.unmount());
+    dom.window.close();
+    for(const [name,descriptor] of Object.entries(originals)) {
+      if(descriptor)Object.defineProperty(globalThis,name,descriptor);else delete globalThis[name];
+    }
+  });
+  await act(async()=>root.render(React.createElement(QuestionGenerationLoading,{startedAt:100_000})));
+  assert.match(host.textContent,/경과 시간 0분 0초/);
+  now+=62_000;
+  await act(async()=>t.mock.timers.tick(1000));
+  assert.match(host.textContent,/경과 시간 1분 2초/);
+  assert.equal(host.querySelector("progress, [role=progressbar]"),null);
+  await act(async()=>root.render(React.createElement(QuestionGenerationLoading,{startedAt:100_000,clockActive:false})));
+  assert.doesNotMatch(host.textContent,/경과 시간/);
+  await act(async()=>root.unmount());
+  const resumed=createRoot(host);
+  await act(async()=>resumed.render(React.createElement(QuestionGenerationLoading,{resumeElapsedMs:45_000})));
+  assert.match(host.textContent,/경과 시간 0분 45초/);
+  now+=3_000;
+  await act(async()=>t.mock.timers.tick(1000));
+  assert.match(host.textContent,/경과 시간 0분 48초/);
+  await act(async()=>resumed.unmount());
+});
+
 test("saved result pins, question navigation, multi-image scope and whole-image targets stay linked",async(t)=>{
   const ui=await mountResult(t);
   assert.equal(ui.host.querySelectorAll(".question-pin").length,3);
   await act(async()=>{ui.host.querySelector('[aria-label="질문 3 위치 보기"]').click();await settle();});
   assert.equal(ui.host.querySelector(".question-panel-count").textContent,"질문 3 / 3");
+  assert.equal(ui.host.querySelector(".question-panel-current-label").textContent,"Q3");
   assert.equal(ui.host.querySelector(".question-panel-text").textContent,"TEST question 3");
   await act(async()=>{
     ui.host.querySelector(".question-panel").dispatchEvent(
@@ -799,6 +926,7 @@ test("saved result pins, question navigation, multi-image scope and whole-image 
     await new Promise(resolve=>setTimeout(resolve,10));await settle();
   });
   assert.equal(ui.host.querySelector(".question-panel-count").textContent,"질문 2 / 3");
+  assert.equal(ui.host.querySelector(".question-panel-current-label").textContent,"Q2");
   await ui.close();
 
   const result=structuredClone(view("completed"));
@@ -895,7 +1023,7 @@ test("session completion shows the briefing overlay only while the completion re
   const dialog=ui.host.querySelector('[role="dialog"]');
   assert.ok(dialog);
   await act(async()=>{[...dialog.querySelectorAll("button")].find(button=>button.textContent==="세션 종료").click();await settle();});
-  assert.equal(ui.host.querySelector(".loading-state-overlay > span:nth-of-type(2)").textContent,"디자인 브리핑을 생성하고 있어요···");
+  assert.equal(ui.host.querySelector(".loading-state-overlay > span:nth-of-type(2)").textContent,"세션을 마무리하고 있어요.");
   assert.equal(ui.host.querySelector(".question-result").hasAttribute("inert"),true);
   assert.equal(ui.host.querySelector(".loading-state-overlay").getAttribute("aria-busy"),"true");
   await act(async()=>{pending.resolve();await settle();});
@@ -935,6 +1063,80 @@ test("answers autosave before question navigation and remain isolated when retur
   await act(async()=>{ui.host.querySelector('[aria-label="질문 1 선택"]').click();await settle();});
   assert.equal(ui.host.querySelector("#question-answer-text").value,"TEST first reflection");
   assert.equal(ui.host.querySelector(".question-panel-count").textContent,"질문 1 / 3");
+});
+
+test("design description opens beside the image and preserves its draft across closing and question navigation",async(t)=>{
+  const result=participantView();
+  result.questions[0].answer.original_answer="TEST saved reflection";
+  const ui=await mountResult(t,result,undefined,"in_progress",sessionId);
+  const supplement=ui.host.querySelector("#question-context-supplement-text");
+  assert.ok(supplement);
+  const trigger=ui.host.querySelector(".question-image-column .question-design-description>button");
+  assert.match(trigger.textContent,/디자인 설명 보완/);
+  assert.equal(ui.host.querySelector(".question-image-column").firstElementChild.classList.contains("question-image-toolbar"),true);
+  assert.equal(trigger.parentElement.parentElement.classList.contains("question-image-toolbar"),true);
+  assert.equal(trigger.parentElement.previousElementSibling.classList.contains("question-pin-visibility"),true);
+  const dialog=ui.host.querySelector("dialog");
+  assert.equal(dialog.open,false);
+  assert.equal(ui.host.querySelector(".question-panel .question-design-description"),null);
+  await act(async()=>{trigger.click();await settle();});
+  assert.equal(dialog.open,true);
+  assert.equal(dialog.querySelector("header button").getAttribute("aria-label"),"디자인 설명 보완 닫기");
+  assert.equal(dialog.querySelector("#question-context-supplement-description"),null);
+  assert.equal(ui.dom.window.document.body.style.overflow,"hidden");
+  assert.notEqual(supplement.id,ui.host.querySelector("#question-answer-text").id);
+  assert.equal(ui.host.querySelector(".question-panel-current-label").textContent,"Q1");
+  await act(async()=>{
+    Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype,"value")
+      .set.call(supplement,"TEST unsaved supplemental context");
+    supplement.dispatchEvent(new ui.dom.window.Event("input",{bubbles:true}));
+    await settle();
+  });
+
+  await act(async()=>{dialog.querySelector("header button").click();await settle();});
+  assert.equal(dialog.open,false);
+  assert.equal(ui.dom.window.document.body.style.overflow,"");
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 2 선택"]').click();await settle();});
+  assert.equal(ui.host.querySelector(".question-conversation-history"),null);
+  assert.equal(ui.host.querySelector(".question-independent-navigation"),null);
+  assert.equal(ui.host.querySelectorAll(".question-page-button").length,3);
+  await act(async()=>{trigger.click();await settle();});
+  assert.equal(supplement.value,"TEST unsaved supplemental context");
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 1 선택"]').click();await settle();});
+  assert.equal(ui.host.querySelector("#question-answer-text").value,"TEST saved reflection");
+  await act(async()=>{dialog.dispatchEvent(new ui.dom.window.Event("cancel",{cancelable:true}));await settle();});
+  assert.equal(dialog.open,false);
+  assert.equal(supplement.value,"TEST unsaved supplemental context");
+});
+
+test("design description saves separately without generation and retains failed input for retry",async(t)=>{
+  const saves=[],calls=[];
+  const ui=await mountResult(t,participantView(),async url=>{
+    calls.push(url);throw new Error("NETWORK FORBIDDEN");
+  },"in_progress",sessionId,async(id,value)=>{
+    saves.push({id,...value});
+    return saves.length===1?{success:false,message:"TEST save failure"}:
+      {success:true,revision:1,context_text:value.context_text};
+  });
+  const trigger=ui.host.querySelector(".question-design-description>button");
+  await act(async()=>{trigger.click();await settle();});
+  const supplement=ui.host.querySelector("#question-context-supplement-text");
+  await act(async()=>{
+    Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype,"value")
+      .set.call(supplement,"TEST design explanation");
+    supplement.dispatchEvent(new ui.dom.window.Event("input",{bubbles:true}));
+    await settle();
+  });
+  const form=ui.host.querySelector("dialog form");
+  await act(async()=>{form.dispatchEvent(new ui.dom.window.Event("submit",{bubbles:true,cancelable:true}));await settle();});
+  assert.match(ui.host.querySelector(".question-context-supplement-status").textContent,/TEST save failure/);
+  assert.equal(supplement.value,"TEST design explanation");
+  await act(async()=>{form.dispatchEvent(new ui.dom.window.Event("submit",{bubbles:true,cancelable:true}));await settle();});
+  assert.deepEqual(saves,[{id:sessionId,context_text:"TEST design explanation",expected_revision:0},
+    {id:sessionId,context_text:"TEST design explanation",expected_revision:0}]);
+  assert.equal(form.querySelector('button[type="submit"]').disabled,true);
+  assert.equal(ui.host.querySelector("#question-answer-text").value,"TEST saved reflection");
+  assert.deepEqual(calls,[]);
 });
 
 test("all uploaded images remain selectable even when the current question targets only one image",async(t)=>{
@@ -1641,7 +1843,7 @@ test("exhausted reserves explain regeneration through tooltip and repeatable toa
 test("question count pending/failure serializes latest changes and requires explicit successful retry",async(t)=>{
   const pending=deferred();let fail=true;
   const ui=await mount(t,{countSaveResult:async()=>fail?pending.promise:{success:true,changed:true,activityRecorded:true}});
-  await ui.click(ui.host.querySelector('input[name="question-count"][value="1"]'));
+  await setQuestionCount(ui,2);
   await act(async()=>{await new Promise(r=>setTimeout(r,5));});
   assert.equal(ui.button("질문 생성하기").disabled,true);
   const link=ui.dom.window.document.createElement("a");link.href="/history";ui.host.appendChild(link);
@@ -1652,14 +1854,14 @@ test("question count pending/failure serializes latest changes and requires expl
   const unload=new ui.dom.window.Event("beforeunload",{cancelable:true});
   ui.dom.window.dispatchEvent(unload);assert.equal(unload.defaultPrevented,true);
   link.remove();
-  await ui.click(ui.host.querySelector('input[name="question-count"][value="5"]'));
+  await setQuestionCount(ui,5);
   await act(async()=>{await new Promise(r=>setTimeout(r,5));});
-  assert.deepEqual(ui.countSaves,[1]);
+  assert.deepEqual(ui.countSaves,[2]);
   await act(async()=>{pending.resolve({success:false,message:"TEST count failed"});await settle();});
   assert.equal(ui.button("질문 생성하기").disabled,true);
-  assert.equal(ui.host.querySelector('input[name="question-count"]:checked').value,"5");
+  assert.equal(ui.host.querySelector('input[name="question-count"]').value,"5");
   fail=false;await ui.click(ui.button("질문 개수 저장 다시 시도"));
-  assert.deepEqual(ui.countSaves,[1,5]);assert.equal(ui.button("질문 생성하기").disabled,false);
+  assert.deepEqual(ui.countSaves,[2,5]);assert.equal(ui.button("질문 생성하기").disabled,false);
 });
 
 test("Context Draft loading gates generation; automatic mock draft flows through existing autosave",async(t)=>{
@@ -1697,9 +1899,10 @@ test("GET authenticates owner and is no-store without generation/trusted writes;
               status:question.status,regeneration_index:question.regeneration_index})):
               table==="session_images"?[{id:imageId,storage_path:`${owner}/${sessionId}/test.png`,sort_order:0,width:1200,height:800}]:
                 table==="question_targets"?completed.questions.flatMap(question=>question.targets.map(target=>({question_id:question.id,...target}))):[];
-        const q={select(){return q;},eq(...args){filters.push(args);return q;},in(...args){filters.push(args);return q;},abortSignal(){return q;},order(){return q;},limit(){return q;},
+        let metadata=false;
+        const q={select(columns){metadata=columns==="id,answer_form"||columns==="question_id,original_answer_fields";return q;},eq(...args){filters.push(args);return q;},in(...args){filters.push(args);return q;},abortSignal(){return q;},order(){return q;},limit(){return q;},
           maybeSingle:async()=>({data:values,error:variant==="db-error"?{code:"PRIVATE"}:null}),
-          then(resolve){const data=table==="questions"&&filters.some(([column,value])=>
+          then(resolve){const data=metadata?[]:table==="questions"&&filters.some(([column,value])=>
             column==="question_kind"&&value==="followup")?[]:values;return Promise.resolve({data,error:null}).then(resolve);}};
         return q;
       },
@@ -1717,14 +1920,14 @@ test("GET authenticates owner and is no-store without generation/trusted writes;
     const response=await GET(new NextRequest(`http://localhost/api/question-generation?session_id=${variant==="bad-id"?"bad":sessionId}`));
     assert.equal(response.headers.get("Cache-Control"),"no-store");
     const body=await response.json();
-    if(variant==="valid") assert.deepEqual(body,view("completed"));
+    if(variant==="valid") assert.deepEqual(body,{...view("completed"),generation_elapsed_ms:null});
     else {assert.ok(response.status>=400);assert.doesNotMatch(JSON.stringify(body),/PRIVATE|TEST question/);}
     if(["anonymous","admin","inactive"].includes(variant)) assert.ok(!calls.includes("sessions"));
   }
 });
 
 test("question count server action validates bounds/auth and uses caller ownership/state guarded update",async()=>{
-  for(const variant of ["valid","bad-count","bad-session","anonymous","admin","inactive","locked","db-error"]) {
+  for(const variant of ["valid","bad-count","one-count","bad-session","anonymous","admin","inactive","locked","db-error"]) {
     const updates=[],filters=[],activities=[],errors=[];
     const caller={
       auth:{getUser:async()=>({data:{user:variant==="anonymous"?null:{id:"TEST-owner"}},error:null})},
@@ -1744,7 +1947,7 @@ test("question count server action validates bounds/auth and uses caller ownersh
       "@/lib/errors/report":{reportError:async(...args)=>{errors.push(args);return {message:"TEST safe failure"};}},
       "@/lib/activity/record":{recordParticipantActivity:async kind=>{activities.push(kind);return true;}},
     })("src/app/(participant)/sessions/[sessionId]/context-actions.ts");
-    const result=await saveQuestionCount(variant==="bad-session"?"bad":sessionId,variant==="bad-count"?6:5);
+    const result=await saveQuestionCount(variant==="bad-session"?"bad":sessionId,variant==="bad-count"?6:variant==="one-count"?1:5);
     assert.equal(result.success,variant==="valid");
     if(variant==="valid") {
       assert.deepEqual(updates,[{requested_question_count:5}]);
@@ -1765,9 +1968,8 @@ test("server page renders the saved result in completed and in-progress sessions
   for(const status of ["completed","in_progress"]) {
     const {default:Page}=loader({
       "@/lib/auth/role":{requireRole:async()=>({user:{id:randomUUID()},supabase:{
-        from:()=>({select(){return this;},eq(){return this;},maybeSingle:async()=>({
-          data:{status,summary_text:"TEST final summary"},error:null,
-        })}),
+        from:table=>({select(){return this;},eq(){return this;},order(){return this;},limit(){return this;},
+          maybeSingle:async()=>({data:table==="sessions"?{status,summary_text:"TEST final summary"}:null,error:null})}),
       }})},
       "@/lib/question-generation/read":{readGenerationView:async()=>{readCalls.push(status);return view("completed");}},
       "./session-wizard":{SessionWizard:()=>{throw new Error("WIZARD FORBIDDEN");}},
@@ -1792,6 +1994,34 @@ test("server page renders the saved result in completed and in-progress sessions
     }
   }
   assert.deepEqual(readCalls,["completed","in_progress"]);
+});
+
+test("server page keeps sessions usable when only the supplement table is not migrated",async()=>{
+  for(const missingCode of ["42P01","PGRST205"]) {
+    let resultProps;
+    const {default:Page}=loader({
+      "@/lib/auth/role":{requireRole:async()=>({user:{id:randomUUID()},supabase:{
+        from:table=>({select(){return this;},eq(){return this;},order(){return this;},limit(){return this;},
+          maybeSingle:async()=>table==="sessions"?
+            {data:{status:"in_progress",summary_text:null},error:null}:
+            {data:null,error:{code:missingCode}},
+        }),
+      }})},
+      "@/lib/question-generation/read":{readGenerationView:async()=>view("completed")},
+      "./session-wizard":{SessionWizard:()=>null},
+      "./question-result":{QuestionResult:props=>{
+        resultProps=props;
+        return React.createElement("div",null,props.contextSupplementAvailable?"available":"unavailable");
+      }},
+      "../../activity-marker":{ActivityMarker:()=>null},
+      "next/link":{default:({children,...props})=>React.createElement("a",props,children)},
+      "next/navigation":{notFound:()=>{throw new Error("NOT FOUND");}},
+    })("src/app/(participant)/sessions/[sessionId]/page.tsx");
+    const element=await Page({params:Promise.resolve({sessionId}),searchParams:Promise.resolve({})});
+    const markup=renderToStaticMarkup(element);
+    assert.equal(resultProps.contextSupplementAvailable,false);
+    assert.equal(markup,"<section class=\"content-stack\"><div>unavailable</div></section>");
+  }
 });
 
 test("session completion blocks unprocessed questions without issuing a completion request",async(t)=>{
@@ -2012,6 +2242,306 @@ test("summary-ready sessions remain read-only without prematurely reading or exp
     await act(async()=>{ui.host.querySelector('[aria-label="질문 3 선택"]').click();await settle();});
     assert.equal(ui.host.querySelector(".question-bubble"),null);
   });
+
+test("pin bubble answer control focuses the exact selected answer without changing or saving it",async t=>{
+  const calls=[];
+  const ui=await mountResult(t,participantView(),async url=>{
+    calls.push(url);throw new Error("NETWORK FORBIDDEN");
+  });
+  for(const slot of [1,2]) {
+    await act(async()=>{ui.host.querySelector(`[aria-label="질문 ${slot} 위치 보기"]`).click();await settle();});
+    const button=ui.host.querySelector(".question-bubble-answer");
+    assert.equal(button.textContent,"답변하기 >");
+    assert.equal(button.disabled,false);
+    await act(async()=>{button.click();await settle();});
+    const input=ui.host.querySelector("#question-answer-text");
+    assert.equal(ui.dom.window.document.activeElement,input);
+    assert.equal(ui.host.querySelector(".question-panel-count").textContent,`질문 ${slot} / 3`);
+    assert.equal(input.value,slot===1?"TEST saved reflection":"");
+    assert.equal(ui.host.querySelector(".question-bubble"),null);
+  }
+  assert.deepEqual(calls,[]);
+});
+
+test("pin bubble answer control is disabled for read-only answers",async t=>{
+  const result=participantView();
+  result.answer_editable=false;
+  const ui=await mountResult(t,result);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 1 위치 보기"]').click();await settle();});
+  assert.equal(ui.host.querySelector(".question-bubble-answer").disabled,true);
+});
+
+test("numbered answer inputs start empty, save only user fields and survive navigation without prefilling",async t=>{
+  const result=view("completed"),calls=[];
+  result.questions[0].answer_form={kind:"numbered",title:"확인할 기준 세 가지",labels:["항목 1","항목 2","항목 3"]};
+  const ui=await mountResult(t,result,async(url,options)=>{
+    calls.push({url,body:JSON.parse(options.body)});
+    return json({success:true,updated_at:"2026-11-12T05:00:00.000Z"});
+  });
+  const inputs=()=>[...ui.host.querySelectorAll(".question-answer-form textarea")];
+  assert.ok(ui.host.querySelector(".question-answer-with-divider"));
+  assert.equal(inputs().length,3);
+  assert.ok(ui.host.querySelector(".question-numbered-form"));
+  assert.ok(inputs().every(input=>input.rows===2));
+  assert.ok(inputs().every(input=>input.value===""));
+  assert.equal(ui.host.querySelector("#question-answer-text"),null);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 2 선택"]').click();await settle();});
+  assert.deepEqual(calls,[]);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 1 선택"]').click();await settle();});
+  await act(async()=>{
+    Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype,"value").set.call(inputs()[1],"두 번째 칸의 생각");
+    inputs()[1].dispatchEvent(new ui.dom.window.Event("input",{bubbles:true}));
+    await settle();
+    ui.host.querySelector('[aria-label="질문 2 선택"]').click();
+    await settle();
+  });
+  assert.equal(calls.length,1);
+  assert.deepEqual(calls[0].body.answer_fields,["","두 번째 칸의 생각",""]);
+  assert.equal(calls[0].body.answer_text,"두 번째 칸의 생각");
+  assert.doesNotMatch(calls[0].body.answer_text,/확인할 기준|항목|1\./);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 1 선택"]').click();await settle();});
+  assert.deepEqual(inputs().map(input=>input.value),["","두 번째 칸의 생각",""]);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 1 위치 보기"]').click();await settle();});
+  await act(async()=>{ui.host.querySelector(".question-bubble-answer").click();await settle();});
+  assert.equal(ui.dom.window.document.activeElement,inputs()[0]);
+});
+
+test("single choice saves only current option and preserves direct draft through navigation",async t=>{
+  const result=view("completed"),calls=[];
+  result.questions[0].answer_form={kind:"choice",title:"비교할 부분",
+    labels:["겹친 부분의 색","도형의 경계","직접 입력","짧은 설명"],max_selections:1,
+    explanation_prompt:"어떤 차이를 확인하고 싶나요?"};
+  const ui=await mountResult(t,result,async(url,options)=>{
+    calls.push(JSON.parse(options.body));
+    return json({success:true,updated_at:"2026-11-12T05:00:00.000Z"});
+  });
+  let boxes=ui.host.querySelectorAll(".question-answer-form input[type=checkbox]");
+  assert.ok(ui.host.querySelector(".question-answer-with-divider"));
+  assert.equal(boxes.length,3);
+  assert.equal(ui.host.querySelector(".question-choice-form legend").textContent,"[비교할 부분] *1개 선택");
+  assert.equal(ui.host.querySelector(".question-answer-form textarea"),null);
+  await act(async()=>{boxes[2].click();await settle();});
+  assert.match(ui.host.textContent,/보기에 없는 답변을 직접 적어주세요/);
+  const explanation=ui.host.querySelector(".question-answer-form textarea");
+  await act(async()=>{
+    Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype,"value").set.call(explanation,"더 선명하게 보이는지");
+    explanation.dispatchEvent(new ui.dom.window.Event("input",{bubbles:true}));
+    await settle();
+    boxes[0].click();await settle();
+    ui.host.querySelector('[aria-label="질문 2 선택"]').click();await settle();
+  });
+  assert.deepEqual(calls.at(-1).answer_fields,["겹친 부분의 색","","",""]);
+  assert.equal(calls.at(-1).answer_text,"겹친 부분의 색");
+  assert.doesNotMatch(calls[0].answer_text,/도형의 경계|직접 입력|짧은 설명/);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 1 선택"]').click();await settle();});
+  assert.equal(ui.host.querySelectorAll(".question-answer-form input[type=checkbox]")[0].checked,true);
+  assert.equal(ui.host.querySelector(".question-answer-form textarea"),null);
+  await act(async()=>{ui.host.querySelectorAll(".question-answer-form input[type=checkbox]")[2].click();await settle();});
+  assert.equal(ui.host.querySelector(".question-answer-form textarea").value,"더 선명하게 보이는지");
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 2 선택"]').click();await settle();});
+  assert.deepEqual(calls.at(-1).answer_fields,["","","더 선명하게 보이는지",""]);
+});
+
+test("legacy direct input and explanation remain visible until replaced",async t=>{
+  const result=view("completed"),calls=[];
+  result.questions[0].answer_form={kind:"choice",title:"비교할 부분",
+    labels:["제목","아주 긴 비교 항목","직접 입력","짧은 설명"],max_selections:2,
+    explanation_prompt:"어떤 차이를 확인하나요?"};
+  result.questions[0].answer={original_answer:"직접 정한 부분\n\n기존 설명",
+    original_answer_fields:["","","직접 정한 부분","기존 설명"],refined_answer:null,
+    refinement_used:false,current_answer_version:"original",updated_at:"2026-10-08T11:00:00.000Z"};
+  const ui=await mountResult(t,result,async(url,options)=>{
+    calls.push(JSON.parse(options.body));
+    return json({success:true,updated_at:"2026-11-12T05:00:00.000Z"});
+  });
+  let boxes=ui.host.querySelectorAll(".question-choice-option input");
+  assert.equal(boxes.length,3);
+  assert.equal(ui.host.querySelector('[id$="-other"]'),null);
+  assert.match(ui.host.textContent,/직접 정한 부분/);
+  assert.match(ui.host.textContent,/기존 설명/);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 2 선택"]').click();await settle();});
+  assert.equal(calls.length,0);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 1 선택"]').click();await settle();});
+  boxes=ui.host.querySelectorAll(".question-choice-option input");
+  await act(async()=>{
+    boxes[0].click();await settle();
+    boxes[1].click();await settle();
+    ui.host.querySelector('[aria-label="질문 2 선택"]').click();await settle();
+  });
+  assert.deepEqual(calls.at(-1).answer_fields,["","아주 긴 비교 항목","",""]);
+  assert.equal(calls.at(-1).answer_text,"아주 긴 비교 항목");
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 1 선택"]').click();await settle();});
+  assert.equal(ui.host.querySelector('[id$="-other"]'),null);
+  assert.equal(ui.host.querySelectorAll(".question-choice-option input")[1].checked,true);
+  assert.equal(ui.host.querySelectorAll(".question-choice-option input")[0].checked,false);
+});
+
+test("legacy multiple selections remain until a choice is changed",async t=>{
+  const result=view("completed"),calls=[];
+  result.questions[0].answer_form={kind:"choice",title:"비교할 부분",
+    labels:["제목","배경","이미지","직접 입력","짧은 설명"],max_selections:2,
+    explanation_prompt:"어떤 차이를 확인하나요?"};
+  result.questions[0].answer={original_answer:"제목\n\n배경\n\n기존 설명",
+    original_answer_fields:["제목","배경","","","기존 설명"],refined_answer:null,
+    refinement_used:false,current_answer_version:"original",updated_at:"2026-10-08T11:00:00.000Z"};
+  const ui=await mountResult(t,result,async(url,options)=>{
+    calls.push(JSON.parse(options.body));
+    return json({success:true,updated_at:"2026-11-12T05:00:00.000Z"});
+  });
+  let boxes=ui.host.querySelectorAll(".question-choice-option input");
+  assert.deepEqual([...boxes].map(box=>box.checked),[true,true,false,false]);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 2 선택"]').click();await settle();});
+  assert.equal(calls.length,0);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 1 선택"]').click();await settle();});
+  boxes=ui.host.querySelectorAll(".question-choice-option input");
+  await act(async()=>{boxes[2].click();await settle();});
+  assert.deepEqual([...ui.host.querySelectorAll(".question-choice-option input")].map(box=>box.checked),[false,false,true,false]);
+  assert.equal(ui.host.querySelector('[id$="-other"]'),null);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 2 선택"]').click();await settle();});
+  assert.deepEqual(calls.at(-1).answer_fields,["","","이미지","",""]);
+});
+
+test("legacy direct input is retained when direct text is edited",async t=>{
+  const result=view("completed"),calls=[];
+  result.questions[0].answer_form={kind:"choice",title:"비교할 부분",
+    labels:["제목","배경","직접 입력","짧은 설명"],max_selections:1,
+    explanation_prompt:"어떤 차이를 확인하나요?"};
+  result.questions[0].answer={original_answer:"기존 직접 입력",original_answer_fields:["","","기존 직접 입력",""],
+    refined_answer:null,refinement_used:false,current_answer_version:"original",updated_at:"2026-10-08T11:00:00.000Z"};
+  const ui=await mountResult(t,result,async(url,options)=>{
+    calls.push(JSON.parse(options.body));
+    return json({success:true,updated_at:"2026-11-12T05:00:00.000Z"});
+  });
+  const explanation=ui.host.querySelector('[id$="-other"]');
+  await act(async()=>{
+    Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype,"value").set.call(explanation,"기존 직접 입력과 추가 설명");
+    explanation.dispatchEvent(new ui.dom.window.Event("input",{bubbles:true}));
+    await settle();
+    ui.host.querySelector('[aria-label="질문 2 선택"]').click();await settle();
+  });
+  assert.deepEqual(calls[0].answer_fields,["","","기존 직접 입력과 추가 설명",""]);
+});
+
+test("empty direct selection leaves answer empty",async t=>{
+  const result=view("completed"),calls=[];
+  result.questions[0].answer_form={kind:"choice",title:"비교할 부분",
+    labels:["색","경계","직접 입력","짧은 설명"],max_selections:1,
+    explanation_prompt:"어떤 차이를 확인하나요?"};
+  const ui=await mountResult(t,result,async(url,options)=>{
+    calls.push(JSON.parse(options.body));
+    return json({success:true,updated_at:"2026-11-12T05:00:00.000Z"});
+  });
+  await act(async()=>{ui.host.querySelectorAll(".question-choice-option input")[2].click();await settle();});
+  const explanation=ui.host.querySelector('[id$="-other"]');
+  assert.equal(explanation.rows,2);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 2 선택"]').click();await settle();});
+  assert.deepEqual(calls.at(-1).answer_fields,["","","",""]);
+  assert.equal(calls.at(-1).answer_text,"");
+});
+
+test("direct draft can reach the limit and switching options excludes it",async t=>{
+  const result=view("completed");
+  result.questions[0].answer_form={kind:"choice",title:"비교할 부분",
+    labels:["색","경계","직접 입력","짧은 설명"],max_selections:1,
+    explanation_prompt:"어떤 차이를 확인하나요?"};
+  const ui=await mountResult(t,result);
+  await act(async()=>{ui.host.querySelectorAll(".question-choice-option input")[2].click();await settle();});
+  const explanation=ui.host.querySelector('[id$="-other"]');
+  await act(async()=>{
+    Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype,"value").set.call(explanation,"가".repeat(20_000));
+    explanation.dispatchEvent(new ui.dom.window.Event("input",{bubbles:true}));
+    await settle();
+  });
+  assert.equal(ui.host.querySelector(".question-choice-option input").disabled,false);
+  await act(async()=>{ui.host.querySelector(".question-choice-option input").click();await settle();});
+  assert.equal(ui.host.querySelector('[id$="-other"]'),null);
+});
+
+test("sectioned follow-up uses separate empty inputs and legacy free text stays intact",async t=>{
+  const result=generatedFollowup(participantView());
+  result.questions[0].followup_question.answer_form={kind:"sections",title:"시안별 생각",labels:["시안 1","시안 2"]};
+  const ui=await mountResult(t,result);
+  assert.equal(ui.host.querySelector("#question-answer-text").value,"TEST saved reflection");
+  assert.equal(ui.host.querySelector(".question-followup .question-numbered-form"),null);
+  const labels=[...ui.host.querySelectorAll(".question-followup .question-answer-form label span")].map(node=>node.textContent);
+  assert.deepEqual(labels,["시안 1","시안 2"]);
+  assert.ok([...ui.host.querySelectorAll(".question-followup textarea")].every(node=>node.value===""));
+});
+
+test("divider is absent from section forms and refined free-text versions",async t=>{
+  const result=view("completed");
+  result.questions[0].answer_form={kind:"sections",title:"시안별 생각",labels:["시안 1","시안 2"]};
+  result.questions[1].answer_form={kind:"choice",title:"비교",labels:["색","경계","직접 입력","짧은 설명"],
+    max_selections:1,explanation_prompt:"어떤 차이를 확인하나요?"};
+  result.questions[1].answer={original_answer:"색",original_answer_fields:["색","","",""],
+    refined_answer:"다듬은 답변",refinement_used:true,current_answer_version:"refined",updated_at:"2026-10-08T11:00:00.000Z"};
+  const ui=await mountResult(t,result);
+  assert.ok(ui.host.querySelector(".question-answer-form"));
+  assert.equal(ui.host.querySelector(".question-answer-with-divider"),null);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 2 선택"]').click();await settle();});
+  assert.equal(ui.host.querySelector("#question-answer-text").value,"다듬은 답변");
+  assert.equal(ui.host.querySelector(".question-answer-with-divider"),null);
+});
+
+test("a pre-existing unstructured answer is not split into fields after a form is supplied",async t=>{
+  const result=participantView();
+  result.questions[0].answer_form={kind:"numbered",title:"확인할 기준",labels:["항목 1","항목 2"]};
+  const ui=await mountResult(t,result);
+  assert.equal(ui.host.querySelector(".question-answer-form"),null);
+  assert.equal(ui.host.querySelector(".question-answer-with-divider"),null);
+  assert.equal(ui.host.querySelector("#question-answer-text").value,"TEST saved reflection");
+});
+
+test("form row boundaries restore after viewing refined text and only original writes submit fields",async t=>{
+  const result=view("completed"),calls=[];
+  result.questions[0].answer_form={kind:"numbered",title:"확인할 기준",labels:["항목 1","항목 2"]};
+  result.questions[0].answer={original_answer:"직접 작성한 생각",original_answer_fields:["","직접 작성한 생각"],
+    refined_answer:"정리한 생각",refinement_used:true,current_answer_version:"original",updated_at:"2026-10-08T11:00:00.000Z"};
+  const ui=await mountResult(t,result,async(url,options)=>{
+    calls.push(JSON.parse(options.body));
+    return json({success:true,updated_at:"2026-11-12T05:00:00.000Z"});
+  });
+
+  const selectVersion=async label=>{
+    await act(async()=>{
+      [...ui.host.querySelectorAll("button.text-link")].find(button=>button.textContent===label).click();
+      await settle();
+    });
+    await act(async()=>{ui.host.querySelector('[aria-label="질문 2 선택"]').click();await settle();});
+    await act(async()=>{ui.host.querySelector('[aria-label="질문 1 선택"]').click();await settle();});
+  };
+  await selectVersion("다듬은 문장 다시 보기");
+  assert.equal(ui.host.querySelector(".question-answer-form"),null);
+  assert.equal(ui.host.querySelector("textarea").value,"정리한 생각");
+  assert.equal(calls[0].answer_version,"refined");
+  assert.equal(Object.hasOwn(calls[0],"answer_fields"),false);
+  await selectVersion("원문으로 되돌리기");
+  assert.deepEqual([...ui.host.querySelectorAll(".question-answer-form textarea")].map(node=>node.value),["","직접 작성한 생각"]);
+  assert.equal(calls[1].answer_version,"original");
+  assert.deepEqual(calls[1].answer_fields,["","직접 작성한 생각"]);
+});
+
+test("structured inputs enforce the existing 20,000-character aggregate including separators",async t=>{
+  const result=view("completed"),calls=[];
+  result.questions[0].answer_form={kind:"numbered",title:"확인할 기준",labels:["항목 1","항목 2"]};
+  const ui=await mountResult(t,result,async(url,options)=>{
+    calls.push(JSON.parse(options.body));
+    return json({success:true,updated_at:"2026-11-12T05:00:00.000Z"});
+  });
+  const edit=async(index,text)=>act(async()=>{
+    const input=ui.host.querySelectorAll(".question-answer-form textarea")[index];
+    Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype,"value").set.call(input,text);
+    input.dispatchEvent(new ui.dom.window.Event("input",{bubbles:true}));await settle();
+  });
+  await edit(0,"가".repeat(19_996));
+  const second=ui.host.querySelectorAll(".question-answer-form textarea")[1];
+  assert.equal(second.maxLength,2);
+  await edit(1,"나다");
+  const fields=[...ui.host.querySelectorAll(".question-answer-form textarea")].map(node=>node.value);
+  await act(async()=>{ui.host.querySelector('[aria-label="질문 2 선택"]').click();await settle();});
+  assert.equal(calls[0].answer_text.length,20_000);
+  assert.deepEqual(calls[0].answer_fields,fields);
+});
 
 test("display pin layout separates dense mobile targets without mutating persisted coordinates",()=>{
   const {layoutQuestionPins}=load("src/lib/question-generation/pin-layout.ts");

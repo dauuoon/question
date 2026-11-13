@@ -10,17 +10,23 @@ import { SessionContextForm } from "./session-context-form";
 import { Toast } from "@/app/toast";
 import { saveQuestionCount } from "./context-actions";
 import { GenerationController, recoveryMessage, type GenerationUI } from "@/lib/question-generation/controller";
-import { questionCountSchema, type GenerationView } from "@/lib/question-generation/view-contract";
+import { selectableQuestionCountSchema, type GenerationView } from "@/lib/question-generation/view-contract";
 import { QuestionResult } from "./question-result";
 import { questionSessionStatus } from "@/lib/session-completion/display-state";
 import { sessionContextSchema } from "@/lib/session-context/input";
 import { LoadingState } from "@/app/loading-state";
+import { QuestionGenerationLoading } from "./question-generation-loading";
 
-export function SessionWizard({ sessionId, initial, initialSavedAt, initialGeneration, sessionStatus }: {
+export function SessionWizard({
+  sessionId, initial, initialSavedAt, initialGeneration, sessionStatus, initialContextSupplement,
+  contextSupplementAvailable,
+}: {
   sessionId: string; initial: SessionContextInput;
   initialSavedAt?: string;
   initialGeneration: GenerationView;
   sessionStatus: string;
+  initialContextSupplement?: { revision: number; text: string };
+  contextSupplementAvailable?: boolean;
 }) {
   const [step, setStep] = useState<SessionStep>(1);
   const [value, setValue] = useState(initial);
@@ -34,7 +40,10 @@ export function SessionWizard({ sessionId, initial, initialSavedAt, initialGener
   const setRetry = useCallback((action: (() => void) | null) => { retry.current = action; }, []);
   const [stepReady, setStepReady] = useState(false);
   const [stepStorageError, setStepStorageError] = useState<string | null>(null);
-  const [generation, setGeneration] = useState<GenerationUI>({ view: initialGeneration, message: "", checking: false });
+  const [generation, setGeneration] = useState<GenerationUI>({
+    view: initialGeneration, message: "", checking: false,
+    requestStartedAt: null, clockActive: initialGeneration.state === "running",
+  });
   const [questionCount, setQuestionCount] = useState(initialGeneration.requested_question_count);
   const [countSave, setCountSave] = useState<SaveState>({ status: "저장됨", message: "" });
   const [imagesAvailable, setImagesAvailable] = useState(false);
@@ -44,7 +53,7 @@ export function SessionWizard({ sessionId, initial, initialSavedAt, initialGener
   const inputsEditable = generation.view.state === "editable";
   const eligible = inputsEditable && imageCount !== null && imageCount > 0 && imagesAvailable &&
     validateSessionStep(2, value, imageCount) === null && sessionContextSchema.safeParse(value).success &&
-    questionCountSchema.safeParse(questionCount).success && saveState.status === "저장됨" &&
+    selectableQuestionCountSchema.safeParse(questionCount).success && saveState.status === "저장됨" &&
     countSave.status === "저장됨" && !draftLoading;
   const ready = useRef(false);
   ready.current = eligible;
@@ -75,6 +84,14 @@ export function SessionWizard({ sessionId, initial, initialSavedAt, initialGener
       saver.dispose(); countSaver.current = null;
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    if (inputsEditable && questionCount === 1) {
+      ready.current = false;
+      setQuestionCount(3);
+      countSaver.current?.change(3, 0);
+    }
+  }, [inputsEditable, questionCount]);
 
   useEffect(() => {
     if (!controller.current) controller.current = new GenerationController(seedGeneration.current,
@@ -111,7 +128,10 @@ export function SessionWizard({ sessionId, initial, initialSavedAt, initialGener
   }
 
   if (generation.view.state === "completed") {
-    return <QuestionResult result={generation.view} sessionStatus={questionSessionStatus(sessionStatus)} />;
+    return <QuestionResult result={generation.view} sessionId={sessionId}
+      initialContextSupplement={initialContextSupplement}
+      contextSupplementAvailable={contextSupplementAvailable}
+      sessionStatus={questionSessionStatus(sessionStatus)} />;
   }
   if (!stepReady) return <LoadingState>마지막 작업 단계를 불러오고 있어요.</LoadingState>;
 
@@ -149,15 +169,18 @@ export function SessionWizard({ sessionId, initial, initialSavedAt, initialGener
       </section> : generation.message ? <p role="alert">{generation.message}</p> : null}
       {step === 3 ? <fieldset className="question-count-control" disabled={!inputsEditable}>
         <legend>질문 개수</legend>
-        <div className="stage-tags">
-          {[1, 2, 3, 4, 5].map((count) => <label className="stage-tag" key={count}>
-            <input type="radio" name="question-count" value={count} checked={questionCount === count}
-              onChange={() => {
-                if (!inputsEditable) return;
-                ready.current = false; setQuestionCount(count); countSaver.current?.change(count, 0);
-              }} />
-            <span>{count}</span>
-          </label>)}
+        <div className="question-count-slider">
+          <label htmlFor="question-count">선택한 질문 <strong>{questionCount === 1 ? 3 : questionCount}개</strong></label>
+          <input id="question-count" name="question-count" type="range" min="2" max="5" step="1"
+            value={questionCount === 1 ? 3 : questionCount} aria-valuetext={`${questionCount === 1 ? 3 : questionCount}개`}
+            onChange={event => {
+              const count = Number(event.target.value);
+              if (!inputsEditable || !selectableQuestionCountSchema.safeParse(count).success) return;
+              ready.current = false; setQuestionCount(count); countSaver.current?.change(count, 0);
+            }} />
+          <div className="question-count-ticks" aria-hidden="true">
+            {[2, 3, 4, 5].map(count => <span key={count}>{count}</span>)}
+          </div>
         </div>
         <p role="status" aria-live="polite">{countSave.status === "저장됨" ? "" : `질문 개수 ${countSave.status}`}</p>
         {countSave.message ? <p role="alert">{countSave.message}</p> : null}
@@ -192,7 +215,8 @@ export function SessionWizard({ sessionId, initial, initialSavedAt, initialGener
       </div>
     </section>
     {generation.view.state === "running" ?
-      <LoadingState variant="overlay">질문을 생성하고 있어요···</LoadingState> : null}
+      <QuestionGenerationLoading startedAt={generation.requestStartedAt}
+        resumeElapsedMs={generation.view.generation_elapsed_ms ?? null} clockActive={generation.clockActive} /> : null}
     </>
   );
 }

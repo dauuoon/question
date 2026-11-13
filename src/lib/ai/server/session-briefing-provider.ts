@@ -9,7 +9,7 @@ import {
   briefingInputSchema,
   briefingResultSchema,
 } from "@/lib/session-completion/briefing-contract";
-import { SESSION_DESIGN_BRIEFING_PROMPT } from "@/lib/ai/prompts/session-design-briefing-v1.5";
+import { SESSION_DESIGN_BRIEFING_PROMPT } from "@/lib/ai/prompts/session-design-briefing-v1.6";
 import { SESSION_DESIGN_BRIEFING_SCHEMA } from "@/lib/ai/schemas/session-design-briefing-v1.0";
 import { SessionBriefingProviderError, type SessionBriefingProvider } from "./session-briefing-service";
 
@@ -35,11 +35,15 @@ export function sessionBriefingParameters(model: string, input: BriefingInput): 
     input: [{ role: "user", content: [{ type: "input_text", text: JSON.stringify({
       participant_confirmed_context: { ...snapshot.design_context, context_ids: snapshot.context_ids },
       final_answers: snapshot.answered_questions.map(question => ({
-        slot_index: question.slot_index, answer: question.answer.selected,
+        slot_index: question.slot_index, question: question.question_text, answer: question.answer.selected,
+        ...(question.answer.choice_selection ? { choice_context: {
+          question: question.question_text, ...question.answer.choice_selection,
+        } } : {}),
         ...(question.followup ? { followup: {
           parent_question: question.question_text,
           question: question.followup.question_text,
           answer: question.followup.answer.selected,
+          ...(question.followup.answer.choice_selection ? { choice_context: question.followup.answer.choice_selection } : {}),
         } } : {}),
       })),
     }) }] }],

@@ -4,12 +4,14 @@ import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { bubblePosition } from "@/lib/question-generation/bubble-position";
 import type { DisplayQuestion } from "@/lib/question-generation/view-contract";
 
-export function QuestionBubble({ frame, anchor, question, obstacles, onClose }: {
+export function QuestionBubble({ frame, anchor, question, obstacles, onClose, onAnswer, answerDisabled }: {
   frame: RefObject<HTMLDivElement | null>;
   anchor: HTMLButtonElement;
   question: DisplayQuestion;
   obstacles: Array<{ left: number; right: number; top: number; bottom: number }>;
   onClose: () => void;
+  onAnswer: () => void;
+  answerDisabled: boolean;
 }) {
   const element = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<ReturnType<typeof bubblePosition> | null>(null);
@@ -31,7 +33,7 @@ export function QuestionBubble({ frame, anchor, question, obstacles, onClose }: 
       const next = bubblePosition({ width: bounds.width * scaleX, height: bounds.height * scaleY }, {
         left: (pin.left - bounds.left) * scaleX, right: (pin.right - bounds.left) * scaleX,
         top: (pin.top - bounds.top) * scaleY, bottom: (pin.bottom - bounds.top) * scaleY,
-      }, (bubble.querySelector("p")?.scrollHeight ?? bubble.scrollHeight) + 32,
+      }, (bubble.querySelector(".question-bubble-content")?.scrollHeight ?? bubble.scrollHeight) + 32,
       obstacles.map(obstacle=>({
         left:(obstacle.left+box.left-bounds.left)*scaleX,
         right:(obstacle.right+box.left-bounds.left)*scaleX,
@@ -63,6 +65,10 @@ export function QuestionBubble({ frame, anchor, question, obstacles, onClose }: 
     onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } }}>
     <button type="button" className="question-bubble-close" aria-label="질문 말풍선 닫기"
       onClick={onClose}>×</button>
-    <p>{question.question_text}</p>
+    <div className="question-bubble-content">
+      <p>{question.question_text}</p>
+      <button type="button" className="question-bubble-answer" disabled={answerDisabled}
+        onClick={onAnswer}>답변하기 &gt;</button>
+    </div>
   </div>;
 }

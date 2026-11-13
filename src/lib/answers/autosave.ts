@@ -2,6 +2,7 @@ export type AnswerVersion="original"|"refined";
 export type AnswerDraft={
   original_answer:string;refined_answer:string|null;refinement_used:boolean;
   current_answer_version:AnswerVersion;updated_at:string|null;
+  original_answer_fields?:string[]|null;
 };
 export type AnswerSaveStatus="저장됨"|"저장 중"|"저장 실패";
 export type AnswerSaveResult={updated_at:string};
@@ -10,8 +11,9 @@ type Entry={
   status:AnswerSaveStatus;timer:ReturnType<typeof setTimeout>|undefined;
   failed:boolean;inFlight:Promise<boolean>|null;
   error:string|undefined;
+  savedFields:string[]|null;
 };
-type SaveAnswer=(questionId:string,text:string,version:AnswerVersion,updatedAt:string|null)=>Promise<AnswerSaveResult>;
+type SaveAnswer=(questionId:string,text:string,version:AnswerVersion,updatedAt:string|null,fields?:string[]|null)=>Promise<AnswerSaveResult>;
 
 export class AnswerAutosave {
   private entries=new Map<string,Entry>();
@@ -22,6 +24,7 @@ export class AnswerAutosave {
     for(const [questionId,answer] of Object.entries(initial)) this.entries.set(questionId,{
       answer:{...answer},savedText:this.currentText(answer),savedVersion:answer.current_answer_version,
       status:"저장됨",timer:undefined,failed:false,inFlight:null,error:undefined,
+      savedFields:answer.original_answer_fields??null,
     });
   }
   private currentText(answer:AnswerDraft) {
@@ -29,7 +32,8 @@ export class AnswerAutosave {
   }
   private dirty(entry:Entry) {
     return entry.savedText!==this.currentText(entry.answer) ||
-      entry.savedVersion!==entry.answer.current_answer_version;
+      entry.savedVersion!==entry.answer.current_answer_version ||
+      JSON.stringify(entry.savedFields)!==JSON.stringify(entry.answer.original_answer_fields??null);
   }
   getAnswer(questionId:string) { return this.entries.get(questionId)?.answer; }
   getStatus(questionId:string) { return this.entries.get(questionId)?.status??"저장됨"; }
@@ -40,11 +44,12 @@ export class AnswerAutosave {
     entry.status=status;
     this.notify(questionId,{...entry.answer},status,entry.error);
   }
-  change(questionId:string,text:string,delay=800) {
+  change(questionId:string,text:string,delay=800,fields?:string[]|null) {
     const entry=this.entries.get(questionId);
     if(!entry || this.disposed) return;
     entry.answer=entry.answer.current_answer_version==="refined"?
-      {...entry.answer,refined_answer:text}:{...entry.answer,original_answer:text};
+      {...entry.answer,refined_answer:text}:{...entry.answer,original_answer:text,
+        original_answer_fields:fields??null};
     clearTimeout(entry.timer);entry.timer=undefined;
     this.publish(questionId,entry,entry.failed?"저장 실패":"저장 중");
     if(!entry.failed) entry.timer=setTimeout(()=>{entry.timer=undefined;void this.flush(questionId);},delay);
@@ -94,12 +99,14 @@ export class AnswerAutosave {
         const text=this.currentText(entry.answer);
         const version=entry.answer.current_answer_version;
         const revision=entry.answer.updated_at;
+        const fields=entry.answer.original_answer_fields??null;
         this.publish(questionId,entry,"저장 중");
         try {
-          const result=await this.save(questionId,text,version,revision);
+          const result=await this.save(questionId,text,version,revision,fields);
           if(this.disposed)return false;
           entry.answer={...entry.answer,updated_at:result.updated_at};
           entry.savedText=text;entry.savedVersion=version;
+          entry.savedFields=fields;
         } catch(error) {
           if(!this.disposed) {
             entry.error=error instanceof Error?error.message:undefined;
